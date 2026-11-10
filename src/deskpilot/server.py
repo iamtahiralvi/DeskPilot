@@ -23,6 +23,8 @@ else:  # e.g. a registry's Linux container: start and list tools, but every call
         pass
 
 INSTRUCTIONS = """Controls the user's real Windows desktop (one chosen screen) with a visible agent cursor.
+Look first: snapshot()/window("list") show what is already open (a web page line shows its URL). If the page or app
+you need is already there, use it; don't retype a URL you are already on. launch() switches to an open tab/window.
 Cheap loop: find/snapshot -> act([...many steps...]) -> read the returned diff. Click by ref (e12, b12 for
 web pages) or by visible text. Web pages in Chrome/Edge are read precisely (b-refs). Use snapshot(scope='ocr')
 or screenshot only when nothing else works. Batch steps. For repeated tasks use routine(). Never retry an
@@ -101,11 +103,12 @@ async def act(steps: list[dict[str, Any]], observe: Literal["diff", "full", "non
 
 
 @mcp.tool(structured_output=False)
-async def launch(target: str) -> str:
+async def launch(target: str, new_window: bool = False) -> str:
     """Open an app by name ("Notepad", "Microsoft Store", "chrome"), a URL, a URI (ms-settings:, ms-windows-store:)
     or a file/folder path. "agent browser <url>" opens the DeskPilot Chrome profile (precise web control).
-    The window is moved to your screen. Returns a snapshot."""
-    return await _run(desk.launch, target)
+    If that page is already open in a browser tab, or that app already has a window, it switches to it instead of
+    opening another copy (new_window=true forces a new one). The window is moved to your screen. Returns a snapshot."""
+    return await _run(desk.launch, target, True, new_window)
 
 
 @mcp.tool(structured_output=False)

@@ -144,6 +144,29 @@ class Browsers:
             return c, sid, match
         return None
 
+    def find_tab(self, url: str, windows) -> tuple | None:
+        """(cdp, targetInfo) of an open tab already showing `url` in any of these browser windows, else None.
+        Only uses browser connections that need no new "Allow remote debugging?" prompt: ones already open in this
+        session, or the DeskPilot browser profile."""
+        seen = set()
+        for w in windows:
+            d = user_data_dir_for(w.pid, w.exe())
+            ep = _endpoint(Path(d)) if d else None
+            if not ep or (ep not in self.conns and Path(d).resolve() != PROFILE_DIR.resolve()):
+                continue
+            for c in self._connection(w.pid, w.exe()):
+                if c.url in seen:
+                    continue
+                seen.add(c.url)
+                try:
+                    infos = c.call("Target.getTargets")["targetInfos"]
+                except Exception:
+                    continue
+                for t in infos:
+                    if t["type"] == "page" and same_page(url, t["url"]):
+                        return c, t
+        return None
+
     def evaluate(self, page, expr: str, timeout: float = 10):
         c, sid, t = page
         try:
@@ -164,6 +187,24 @@ class Browsers:
 
     def locate(self, page, ref: str):
         return self.evaluate(page, f"({LOCATE_JS})({json.dumps(ref)})")
+
+
+def _url_key(u: str) -> tuple[str, str, str]:
+    from urllib.parse import urlsplit
+
+    p = urlsplit(u if "://" in u else "https://" + u)
+    host = p.netloc.lower()
+    host = host[4:] if host.startswith("www.") else host
+    return host, p.path.rstrip("/").lower(), p.query
+
+
+def same_page(want: str, have: str) -> bool:
+    """Same site + path (ignores scheme, www., trailing slash and #fragment); a query in `want` must match."""
+    if not have.startswith(("http://", "https://")):
+        return False
+    h1, p1, q1 = _url_key(want)
+    h2, p2, q2 = _url_key(have)
+    return h1 == h2 and p1 == p2 and (not q1 or q1 == q2)
 
 
 def find_chrome() -> str | None:

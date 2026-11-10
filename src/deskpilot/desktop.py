@@ -712,7 +712,7 @@ class Desktop:
             self.window("focus", st["focus"])
             return
         if "launch" in st:
-            self.launch(str(st["launch"]), observe=False)
+            self.launch(str(st["launch"]), observe=False, new_window=bool(st.get("new", False)))
             return
         raise AgentError(f"unknown step {st}")
 
@@ -807,7 +807,62 @@ class Desktop:
                 self._apps = []
         return self._apps
 
-    def launch(self, target: str, observe: bool = True) -> str:
+    # ---- "already open?" checks, so launch() switches instead of opening a second copy
+    def _bring_here(self, w: winutil.Win) -> None:
+        if w.minimized:
+            winutil.focus(w.hwnd)
+        if not winutil.on_area(w, self.areas):
+            winutil.move_to(w.hwnd, self.areas[0])
+        winutil.focus(w.hwnd)
+        time.sleep(0.3)
+
+    def _reuse_tab(self, url: str) -> str | None:
+        """If a browser tab already shows this page, switch to it and return a message."""
+        from .browser import same_page
+
+        wins = [w for w in winutil.windows(include_minimized=True) if w.exe().lower() in BROWSER_EXES]
+        if not wins:
+            return None
+        # 1. A window already showing it (address bar via accessibility; no permission prompt, any browser).
+        for w in wins:
+            shown = self.uia.address_bar(w.hwnd)
+            if shown and same_page(url, shown if "://" in shown else "https://" + shown):
+                self._bring_here(w)
+                return f'already open: {self.wref(w.hwnd)} "{w.title[:60]}" is showing {shown[:80]}'
+        # 2. A background tab, over browser connections that are already allowed.
+        hit = self.browsers.find_tab(url, wins)
+        if not hit:
+            return None
+        c, tab = hit
+        try:
+            c.call("Target.activateTarget", {"targetId": tab["targetId"]})
+        except Exception:
+            return None
+        title = tab.get("title") or ""
+        end = time.time() + 2
+        while time.time() < end:  # the window title follows the active tab
+            w = next((w for w in winutil.windows(include_minimized=True)
+                      if w.exe().lower() in BROWSER_EXES and title and w.title.startswith(title[:40])), None)
+            if w:
+                self._bring_here(w)
+                return f'already open: switched to the existing tab "{title[:60]}" ({tab["url"][:80]}) -> ' \
+                       f'{self.wref(w.hwnd)}'
+            time.sleep(0.15)
+        return None
+
+    def _reuse_app(self, name: str) -> str | None:
+        """If a window of this app is already open, bring it here and return a message."""
+        q = name.lower().strip()
+        compact = q.replace(" ", "")
+        for w in winutil.windows(include_minimized=True):
+            title = w.title.lower()
+            stem = w.exe().lower().removesuffix(".exe")
+            if title == q or title.endswith(" - " + q) or title.startswith(q + " - ") or stem == compact:
+                self._bring_here(w)
+                return f'already open: switched to {self.wref(w.hwnd)} "{w.title[:60]}"'
+        return None
+
+    def launch(self, target: str, observe: bool = True, new_window: bool = False) -> str:
         self.ensure_ready()
         t = target.strip()
         self.ui_log(f"launch {t[:50]}")
@@ -815,6 +870,12 @@ class Desktop:
         fg_before = winutil.foreground()
         how = ""
         m = re.match(r"^(agent|deskpilot) browser\s*(.*)$", t, re.I)
+        web = (m.group(2).strip() if m else t)
+        if not new_window and re.match(r"^(https?://|www\.)", web, re.I):
+            reused = self._reuse_tab(web)
+            if reused:
+                audit({"event": "launch", "target": t, "reused": True})
+                return reused + ("\n" + self.snapshot() if observe else "")
         if m:
             url = m.group(2).strip() or "about:blank"
             if not re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I):
@@ -833,6 +894,11 @@ class Desktop:
             how = "opened"
         else:
             self._require({"kind": "launch", "app": t})
+            if not new_window:
+                reused = self._reuse_app(t)
+                if reused:
+                    audit({"event": "launch", "target": t, "reused": True})
+                    return reused + ("\n" + self.snapshot() if observe else "")
             apps = self._start_apps()
             q = t.lower()
             app = (next((a for a in apps if a["Name"].lower() == q), None)

@@ -8,7 +8,13 @@ description: Use the user's Windows computer through the deskpilot MCP tools (sn
 You control ONE screen the user chose. It has a thin black-and-white border, and you move the real mouse pointer. The user watches
 through a control panel where they can Pause, Take over or Stop you, or press Ctrl+Alt+Esc.
 
-## 0. Check saved routines first
+## 0. Look before you open anything
+Run `snapshot()` (or `window("list")`) first. A web page shows as `page <url>`. If the page or app you need is
+already open, work in it: don't open a second copy, and don't press Ctrl+L to retype the URL you're already on.
+`launch(url)` and `launch("App")` switch to an existing tab or window automatically. Pass `new_window=true` only
+when you really need another copy.
+
+## 0.5 Check saved routines
 Run `routine("list")`. If one matches the task, use `routine("run", name, params={...})`. That's the
 cheapest path by far.
 
@@ -27,8 +33,10 @@ cheapest path by far.
    crop), then a full `screenshot()` (~1k+ tokens).
 
 ## 2. Websites (Play Console, dashboards, etc.)
-- Work in the browser that is already open on your screen. Navigate with
-  `{"key":"ctrl+l"},{"type":"play.google.com/console","enter":true},{"wait":"All apps","timeout":20}`.
+- Work in the browser that is already open on your screen. To go to a site, prefer `launch("https://…")`: it reuses
+  an open tab for that page. Navigate inside a tab with
+  `{"key":"ctrl+l"},{"type":"play.google.com/console","enter":true},{"wait":"All apps","timeout":20}` only when
+  the current `page` URL is different.
 - If page lines show no `b` refs (only `e` refs), the browser isn't connected for precise control.
   `launch("agent browser https://play.google.com/console")` opens the DeskPilot browser, where the user
   signs in once.

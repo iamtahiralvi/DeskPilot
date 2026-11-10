@@ -263,6 +263,18 @@ class UIA:
         el = self.uia.ElementFromHandle(hwnd)
         return self._convert(el.BuildUpdatedCache(self.cr))
 
+    def address_bar(self, hwnd: int) -> str | None:
+        """The URL in a Chromium browser window's address bar (its active tab), via accessibility. No CDP needed."""
+        try:
+            el = self.uia.ElementFromHandle(hwnd)
+            bar = el.FindFirst(4, self.uia.CreatePropertyCondition(P_NAME, "Address and search bar"))  # descendants
+            if not bar:
+                return None
+            v = bar.GetCurrentPropertyValue(P_VALUE)
+            return str(v) if v else None
+        except Exception:
+            return None
+
     def focused(self) -> Node | None:
         try:
             el = self.uia.GetFocusedElement()

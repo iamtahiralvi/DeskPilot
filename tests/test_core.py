@@ -146,3 +146,14 @@ def test_routines_roundtrip(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         R.fill(steps, {})
     assert R.delete("New App") and not R.all_routines()
+
+
+def test_same_page_matching():
+    from deskpilot.browser import same_page
+
+    assert same_page("https://github.com/iamtahiralvi/DeskPilot", "https://github.com/iamtahiralvi/DeskPilot/")
+    assert same_page("github.com/iamtahiralvi/deskpilot", "https://www.github.com/iamtahiralvi/DeskPilot#readme")
+    assert same_page("https://x.com/home", "https://x.com/home?ref=1")          # no query asked: any query is fine
+    assert not same_page("https://x.com/home?tab=2", "https://x.com/home?tab=1")
+    assert not same_page("https://github.com/iamtahiralvi", "https://github.com/iamtahiralvi/DeskPilot")
+    assert not same_page("https://github.com", "chrome://newtab/")

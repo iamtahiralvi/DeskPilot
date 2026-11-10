@@ -136,7 +136,7 @@ class Input:
             time.sleep(0.03)
 
     # ---------- keyboard ----------
-    def type_text(self, text: str, delay: float = 0.05) -> None:
+    def type_text(self, text: str, delay: float = 0.012) -> None:
         """Types like a fast human. Key down and key up go as separate events with a short gap: sending them
         together at 4 ms/char made apps such as the Win11 Notepad drop characters."""
         self.on_event("label", text=f"typing: {text[:30]}{'...' if len(text) > 30 else ''}")
