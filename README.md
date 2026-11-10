@@ -6,8 +6,13 @@
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows%2011-black)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-black)
 ![MCP](https://img.shields.io/badge/MCP-stdio-black)
+[![Glama score](https://glama.ai/mcp/servers/iamtahiralvi/DeskPilot/badges/score.svg)](https://glama.ai/mcp/servers/iamtahiralvi/DeskPilot)
 
-> **Platform note:** DeskPilot has been tested on **Windows 11 only**. Windows 10 will probably work but is untested. macOS and Linux are not supported, because it is built on Windows UI Automation, Win32 input and Windows OCR.
+> **Platform note:** DeskPilot controls a **Windows** desktop and has been tested on **Windows 11 only**. Windows 10 will probably work but is untested.
+>
+> The server *installs and starts* on Linux and macOS, so MCP registries can check it there. But it can't control anything on those systems: every tool replies that DeskPilot only runs on Windows. It's built on Windows UI Automation, Win32 input and Windows OCR, which those systems don't have.
+
+**Listed on [Glama](https://glama.ai/mcp/servers/iamtahiralvi/DeskPilot)**, the MCP server directory.
 
 ---
 
@@ -73,7 +78,7 @@ The agent clicks by reference (`e12`) or by visible text (`"Install"`). After ea
 
 ## Requirements
 
-- Windows 11 (tested), 64-bit
+- Windows 11 (tested), 64-bit. Not Linux or macOS (see the platform note above).
 - [uv](https://docs.astral.sh/uv/), which installs Python 3.11+ for you
 - An MCP-capable AI client (see [Connect your AI tool](#connect-your-ai-tool))
 
@@ -363,6 +368,8 @@ uv sync
 uv run --group dev pytest
 uv run deskpilot doctor
 ```
+
+The `Dockerfile` exists only so MCP registries such as Glama can build the server and check that it starts and lists its tools. Inside a Linux container, DeskPilot can't control a desktop.
 
 After you change the code, reinstall the global command (`--reinstall` makes uv rebuild instead of reusing a cached build):
 
