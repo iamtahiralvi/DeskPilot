@@ -2,15 +2,25 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image
 
 from .config import set_dpi_awareness
-from .desktop import AgentError, Desktop
 
-set_dpi_awareness()
+IS_WINDOWS = sys.platform == "win32"
+NOT_WINDOWS = ("ERROR: DeskPilot controls a Windows desktop and only runs on Windows. "
+               "This server is running on another OS, so no tool can act here.")
+
+if IS_WINDOWS:
+    from .desktop import AgentError, Desktop
+
+    set_dpi_awareness()
+else:  # e.g. a registry's Linux container: start and list tools, but every call explains the limitation
+    class AgentError(Exception):
+        pass
 
 INSTRUCTIONS = """Controls the user's real Windows desktop (one chosen screen) with a visible agent cursor.
 Cheap loop: find/snapshot -> act([...many steps...]) -> read the returned diff. Click by ref (e12, b12 for
@@ -20,10 +30,21 @@ action the user denied. If PAUSED or STOPPED, stop and tell the user. When the t
 call done() so the overlay and control panel disappear."""
 
 mcp = MCPServer("deskpilot", instructions=INSTRUCTIONS)
-desk = Desktop()
+
+
+class _NotWindows:
+    """Stand-in on non-Windows systems so tool definitions still load."""
+
+    def __getattr__(self, name):
+        return lambda *a, **kw: None
+
+
+desk = Desktop() if IS_WINDOWS else _NotWindows()
 
 
 async def _run(fn, *a, **kw):
+    if not IS_WINDOWS:
+        return NOT_WINDOWS
     desk.busy()
     desk.ui_state("working")
     try:
@@ -116,6 +137,8 @@ async def screenshot(ref: str | None = None, region: list[int] | None = None, ma
                      max_side: int = 1280, screen: int | None = None) -> list:
     """Last resort image of your screen (costs many tokens). ref=crop around an element (cheap, sharp);
     region=[x,y,w,h] in previous screenshot pixels; marks=draw refs from the last snapshot."""
+    if not IS_WINDOWS:
+        return [NOT_WINDOWS]
     desk.busy()
     desk.ui_state("working")
     try:
@@ -133,6 +156,8 @@ async def screenshot(ref: str | None = None, region: list[int] | None = None, ma
 async def done(summary: str = "") -> str:
     """Call once the task is complete (or you are stopping): hides the agent cursor, screen border and
     control panel so the user gets their screen back. summary = one short line of what you did."""
+    if not IS_WINDOWS:
+        return NOT_WINDOWS
     desk.busy()
     return await asyncio.wrap_future(desk.call(desk.finish, summary))
 
@@ -141,4 +166,5 @@ def run() -> None:
     try:
         mcp.run("stdio")
     finally:
-        desk.overlay.stop()
+        if IS_WINDOWS:
+            desk.overlay.stop()

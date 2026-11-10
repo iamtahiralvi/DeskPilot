@@ -18,21 +18,22 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2.0,<3",
-    "uiautomation>=2.0.20",
     "mss>=9.0",
     "pillow>=10.0",
-    "pywin32>=306",
     "pyyaml>=6.0",
     "websocket-client>=1.8",
-    "customtkinter>=5.2",
     "psutil>=5.9",
-    "winrt-runtime>=2.0",
-    "winrt-Windows.Media.Ocr>=2.0",
-    "winrt-Windows.Graphics.Imaging>=2.0",
-    "winrt-Windows.Storage.Streams>=2.0",
-    "winrt-Windows.Globalization>=2.0",
-    "winrt-Windows.Foundation>=2.0",
-    "winrt-Windows.Foundation.Collections>=2.0",
+    # Windows-only: DeskPilot controls a Windows desktop. Elsewhere the server still starts and lists its tools.
+    "uiautomation>=2.0.20; sys_platform == 'win32'",
+    "pywin32>=306; sys_platform == 'win32'",
+    "customtkinter>=5.2; sys_platform == 'win32'",
+    "winrt-runtime>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Media.Ocr>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Globalization>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=2.0; sys_platform == 'win32'",
 ]
 
 [project.urls]
