@@ -35,9 +35,11 @@ DEFAULT_POLICY = {
     "private_windows": ["1password", "bitwarden", "keepass", "lastpass", "dashlane", "proton pass",
                         "windows security", "credential manager", "authenticator",
                         "allow remote debugging", "user account control"],
-    # Read pages in your everyday Chrome/Edge too (needs chrome://inspect/#remote-debugging turned on;
-    # Chrome asks you to Allow once per session). False = only the DeskPilot browser.
-    "use_my_browser": True,
+    # Off by default: your everyday Chrome/Edge is read through the screen (Windows accessibility), so Chrome never
+    # shows "Allow remote debugging?". True = also connect DevTools to it for more precise page reading (needs
+    # chrome://inspect/#remote-debugging turned on, and YOU click Allow once per session; the agent never can).
+    # The DeskPilot browser ("agent browser <url>") always gets precise control without that prompt.
+    "use_my_browser": False,
     # Replace API keys, tokens, card numbers, IBANs and private keys with placeholders before the AI sees them.
     "redact_secrets": True,
     # Website-specific words that always need your OK (e.g. Play Console publishing).

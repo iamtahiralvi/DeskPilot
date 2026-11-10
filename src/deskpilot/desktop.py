@@ -95,7 +95,7 @@ class Desktop:
         self.refs = RefTable("e")
         self.web: dict[str, dict] = {}
         self.browsers = Browsers()
-        self.browsers.allow_real_profile = bool(self.gate.policy.rules.get("use_my_browser", True))
+        self.browsers.allow_real_profile = bool(self.gate.policy.rules.get("use_my_browser", False))
         self.win_refs: dict[int, str] = {}
         self.win_by_ref: dict[str, int] = {}
         self.last: dict = {"hwnd": None, "by_ref": {}}

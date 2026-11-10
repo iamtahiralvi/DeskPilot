@@ -288,18 +288,17 @@ While it works:
 | End the task | **Stop** (click **Unlock** later to allow it again) |
 | Approve a risky step | **Allow once** / **Allow for session** in the dialog |
 
-## Browser setup (optional, for precise web control)
+## Browsers
 
-Use either or both:
+**By default, no setup is needed.** DeskPilot reads your everyday Chrome, Edge or Brave through the screen, using Windows accessibility, the same way screen readers do. It never connects to the browser's developer tools, so you never see Chrome's **"Allow remote debugging?"** prompt.
 
-1. **Your everyday Chrome or Edge.**
-   1. Open `chrome://inspect/#remote-debugging` and turn remote debugging on.
-   2. The first time the agent reads a page in each session, the browser asks **"Allow remote debugging?"**. You click **Allow**; the agent is never allowed to click it.
+For more precise web control (`b12` refs, elements outside the visible area), there are two options:
 
-   To turn this off, set `use_my_browser: false` in the policy file.
-2. **The DeskPilot browser.** Ask the agent to open `agent browser https://example.com`. This uses a separate Chrome profile. Sign in once and it stays signed in.
-
-Without either, pages are still readable through Windows UI Automation, but less precisely.
+1. **The DeskPilot browser (recommended).** Ask the agent to open `agent browser https://example.com`. It's a separate Chrome profile that DeskPilot starts itself, so it has precise control with no prompt. Sign in once and it stays signed in.
+2. **Your everyday Chrome or Edge (opt-in).**
+   1. Set `use_my_browser: true` in the policy file.
+   2. Open `chrome://inspect/#remote-debugging` and turn remote debugging on.
+   3. The first time DeskPilot reads a page in each session, the browser asks **"Allow remote debugging?"**. **You** click Allow. DeskPilot will never click it for you, because that prompt protects your logged-in sessions and cookies from being taken over.
 
 ## Tools
 
@@ -332,7 +331,7 @@ Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Ed
 | `confirm_timeout_seconds` | Auto-deny an unanswered dialog after this long (default 60) |
 | `private_windows` | Windows that are never read, captured or clicked |
 | `redact_secrets` | Redact keys, tokens and card numbers from what the model sees |
-| `use_my_browser` | Also read your everyday Chrome or Edge (needs remote debugging) |
+| `use_my_browser` | Default `false`: your everyday browser is read through the screen, with no prompt. `true` = also use DevTools on it (you approve Chrome's prompt) |
 | `hide_overlay_after_idle_seconds` | Hide the overlay when the agent goes quiet (default 30, `0` = never) |
 
 Other files in `~/.deskpilot/`:

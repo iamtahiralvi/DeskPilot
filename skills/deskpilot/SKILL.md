@@ -37,11 +37,10 @@ cheapest path by far.
   an open tab for that page. Navigate inside a tab with
   `{"key":"ctrl+l"},{"type":"play.google.com/console","enter":true},{"wait":"All apps","timeout":20}` only when
   the current `page` URL is different.
-- If page lines show no `b` refs (only `e` refs), the browser isn't connected for precise control.
-  `launch("agent browser https://play.google.com/console")` opens the DeskPilot browser, where the user
-  signs in once.
-- If a window called "Allow remote debugging?" is hidden from you, ask the user to click **Allow** there.
-  Never try to click it yourself.
+- The user's everyday browser is read through the screen (`e` refs). That is normal and works for most pages.
+  If you need precise control (`b` refs, off-screen elements), `launch("agent browser https://…")` opens the
+  DeskPilot browser, where the user signs in once.
+- If a window called "Allow remote debugging?" appears, never click it yourself. It is the user's decision.
 
 ## 3. Save repeatable work as routines
 When the user will repeat a task:
