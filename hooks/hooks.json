@@ -1,0 +1,18 @@
+{
+  "description": "Auto-approve DeskPilot's read-only tools (reading the screen, finding elements, screenshots, screen info, hiding the overlay). Tools that click, type, launch or change windows still go through the normal permission flow.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__.*deskpilot__(snapshot|find|screenshot|screen_info|done)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/allow-read-only.cmd",
+            "args": [],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

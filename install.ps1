@@ -33,7 +33,7 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 }
 $skillDst = Join-Path $env:USERPROFILE ".claude\skills\deskpilot"
 New-Item -ItemType Directory -Force $skillDst | Out-Null
-Copy-Item (Join-Path $root "skills\deskpilot\SKILL.md") $skillDst -Force
+Copy-Item (Join-Path $root "skills\deskpilot\*") $skillDst -Recurse -Force   # SKILL.md + reference/
 Write-Host "Installed skill -> $skillDst" -ForegroundColor Green
 
 # 5. Snippets for other agents

@@ -84,7 +84,28 @@ The agent clicks by reference (`e12`) or by visible text (`"Install"`). After ea
 
 ## Install
 
-### Easiest: let Claude install it for you
+### Claude Code plugin (recommended)
+
+In Claude Code, run:
+
+```text
+/plugin marketplace add iamtahiralvi/DeskPilot
+/plugin install deskpilot@deskpilot
+```
+
+On Claude Code 2.1.275 or later, one command does both: `/plugin install deskpilot --marketplace iamtahiralvi/DeskPilot`.
+
+The plugin includes everything:
+- **the MCP server**, run through [uv](https://docs.astral.sh/uv/). The first start takes about a minute while uv sets it up.
+- **the DeskPilot skill**, which teaches Claude the cheap, safe way to use the tools.
+- **a hook that auto-approves the read-only tools** (snapshot, find, screenshot, screen info, done), so you aren't asked every time Claude reads the screen. Tools that click, type or launch still ask as usual.
+
+Requirements: Windows and `uv`. If you don't have uv: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.
+
+> Use the plugin **or** the options below, not both. Otherwise Claude Code runs two DeskPilot servers. If you
+> installed DeskPilot before, remove the old registration first: `claude mcp remove deskpilot --scope user`.
+
+### Let Claude install it for you
 
 Open **Claude Code** (the terminal app, the **Code** tab in the Claude desktop app, or the VS Code extension; it works with a Pro plan). Paste this prompt:
 
@@ -98,9 +119,10 @@ Install the DeskPilot MCP server on this Windows PC from https://github.com/iamt
 3. Register it with Claude Code for all projects:
    claude mcp add deskpilot --scope user -- "%USERPROFILE%\.local\bin\deskpilot.exe" serve
    (expand %USERPROFILE% to the real path)
-4. Install the skill: download
-   https://raw.githubusercontent.com/iamtahiralvi/DeskPilot/main/skills/deskpilot/SKILL.md
-   to %USERPROFILE%\.claude\skills\deskpilot\SKILL.md
+4. Install the skill: download these files from
+   https://raw.githubusercontent.com/iamtahiralvi/DeskPilot/main/skills/deskpilot/
+   (SKILL.md, reference/act-steps.md, reference/web.md, reference/troubleshooting.md, reference/routines.md)
+   into %USERPROFILE%\.claude\skills\deskpilot\, keeping the reference\ folder
 5. If the Claude desktop app is installed (%APPDATA%\Claude\claude_desktop_config.json exists), also add
    "deskpilot": { "command": "<full path to deskpilot.exe>", "args": ["serve"] } under "mcpServers",
    keeping every existing entry.
@@ -164,7 +186,7 @@ Optional: install the bundled skill, which teaches Claude the cheapest way to us
 
 ```powershell
 mkdir "$env:USERPROFILE\.claude\skills\deskpilot" -Force
-copy skills\deskpilot\SKILL.md "$env:USERPROFILE\.claude\skills\deskpilot\"
+Copy-Item skills\deskpilot\* "$env:USERPROFILE\.claude\skills\deskpilot\" -Recurse -Force
 ```
 
 Restart Claude Code, or run `/mcp` to reconnect.

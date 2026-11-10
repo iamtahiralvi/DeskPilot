@@ -1,6 +1,6 @@
 [project]
 name = "deskpilot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Low-token Windows computer-use MCP server with a visible agent cursor, screen picker and ask-first permissions."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,0 +1,23 @@
+{
+  "name": "deskpilot",
+  "displayName": "DeskPilot",
+  "version": "0.2.0",
+  "description": "Low-token Windows computer use: the DeskPilot MCP server, a skill that teaches the agent to use it well, and a hook that auto-approves read-only screen reads.",
+  "author": {
+    "name": "Tahir Alvi",
+    "url": "https://github.com/iamtahiralvi"
+  },
+  "homepage": "https://github.com/iamtahiralvi/DeskPilot",
+  "repository": "https://github.com/iamtahiralvi/DeskPilot",
+  "license": "MIT",
+  "keywords": ["windows", "computer-use", "desktop-automation", "mcp", "ui-automation", "browser"],
+  "mcpServers": {
+    "deskpilot": {
+      "command": "uv",
+      "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "--frozen", "--quiet", "deskpilot", "serve"],
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv"
+      }
+    }
+  }
+}

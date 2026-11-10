@@ -1,0 +1,17 @@
+{
+  "name": "deskpilot",
+  "owner": {
+    "name": "Tahir Alvi",
+    "url": "https://github.com/iamtahiralvi"
+  },
+  "description": "DeskPilot: low-token Windows computer use for Claude Code.",
+  "plugins": [
+    {
+      "name": "deskpilot",
+      "source": "./",
+      "description": "Let Claude use your real Windows PC: reads the screen as text, one chosen display, ask-first permissions, Pause/Stop anytime.",
+      "category": "automation",
+      "tags": ["windows", "computer-use", "mcp"]
+    }
+  ]
+}
