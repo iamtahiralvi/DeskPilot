@@ -1,0 +1,36 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local agent / tool state, AI notes, logs (never publish these)
+.claude/
+.serena/
+.cursor/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+NOTES.md
+notes/
+scratch/
+*.log
+*.jsonl
+audit*
+session.json
+policy.yaml
+.env
+.env.*
