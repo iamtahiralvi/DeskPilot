@@ -11,6 +11,38 @@
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/overlay-working.png" alt="DeskPilot working on a screen: thin border, status chip at the top and a Claude tag next to the real mouse pointer" width="820">
+  <br><sub>The agent at work: a thin border marks its screen, the chip says what's happening, and a small tag follows your <b>real</b> mouse pointer.</sub>
+</p>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/panel-working.png" alt="Control panel with live status, activity log and Pause / Take over / Stop buttons" width="300"><br>
+      <sub><b>Control panel</b>: live step, activity log, token count, and Pause / Take over / Stop.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/permission.png" alt="Permission dialog asking to allow a click on Submit" width="400"><br>
+      <sub><b>Ask-first permissions</b>: risky steps wait for your OK and are auto-denied after 60 s.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/picker.png" alt="Screen picker with Screen 1, Screen 2 and All screens" width="400"><br>
+      <sub><b>Screen picker</b>: give the agent one display (or all) and keep the others for yourself.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/overlay-paused.png" alt="Paused state with a dashed border" width="400"><br>
+      <sub><b>Paused</b>: the border turns dashed. Resume with Ctrl+Alt+Esc or from the panel.</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Why DeskPilot
 
 Most computer-use tools send a screenshot to the model on every step, which is slow and costs a lot of tokens. DeskPilot reads the screen as **text**:
