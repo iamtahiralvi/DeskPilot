@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync --python 3.12
+      - name: Unit tests
+        run: uv run --group dev pytest -q
+
+  start-linux:
+    name: Server starts on Linux (registry checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv venv --python 3.12 && uv pip install .
+      - name: MCP handshake lists all tools
+        shell: bash
+        run: |
+          out=$( { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}'; sleep 2
+                   printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 3; } \
+                 | .venv/bin/deskpilot serve 2>&1 )
+          n=$(echo "$out" | grep -oE '"name":"(screen_info|snapshot|find|act|launch|window|clipboard|routine|screenshot|done)"' | sort -u | wc -l)
+          echo "tools listed: $n"
+          test "$n" -eq 10
