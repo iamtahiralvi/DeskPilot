@@ -177,6 +177,8 @@ class Desktop:
         try:
             return self._dialog(title, detail)
         finally:
+            # The user just moved the mouse to click Allow/Deny: that is not "taking over".
+            self.input.grace(1.5)
             self.ui_state("working")
 
     def _input_event(self, kind, **kw):

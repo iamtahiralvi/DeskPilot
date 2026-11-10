@@ -71,6 +71,10 @@ class Input:
         self.on_move = on_move or (lambda x, y: None)
         self.on_event = on_event or (lambda kind, **kw: None)
         self.speed = speed
+        self.grace_until = 0.0  # ignore human mouse motion until then (e.g. just after they answered a dialog)
+
+    def grace(self, seconds: float = 1.2) -> None:
+        self.grace_until = time.time() + seconds
 
     # ---------- mouse ----------
     def move(self, x: int, y: int) -> None:
@@ -81,7 +85,7 @@ class Input:
         last = (sx, sy)
         for i in range(1, steps + 1):
             cx, cy = cursor_pos()
-            if math.hypot(cx - last[0], cy - last[1]) > 30:
+            if math.hypot(cx - last[0], cy - last[1]) > 30 and time.time() > self.grace_until:
                 raise UserInterrupted("You moved the mouse, so the agent stopped. Ask it to continue when ready.")
             t = i / steps
             e = 1 - (1 - t) ** 3  # ease-out

@@ -95,7 +95,9 @@ class Policy:
         if kind in ("click", "dblclick", "rclick", "drag") and name:
             if self._deny_click and self._deny_click.search(name):
                 return Decision("deny", f"'{name}' is on your deny list")
-            m = self._ask_click and self._ask_click.search(name)
+            # Clicking into a text box only focuses it (X's composer is literally named "Post text").
+            text_box = a.get("role") in ("edit", "doc", "document", "combo", "textbox", "searchbox")
+            m = not text_box and self._ask_click and self._ask_click.search(name)
             if m:
                 return Decision("ask", f"click '{name}' ({m.group(1)})", f"click:{name.lower()}")
         if kind == "key":
