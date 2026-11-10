@@ -13,7 +13,7 @@ jobs:
     name: Tests (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Install
         run: uv sync --python 3.12
@@ -24,7 +24,7 @@ jobs:
     name: Server starts on Linux (registry checks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Install
         run: uv venv --python 3.12 && uv pip install .
