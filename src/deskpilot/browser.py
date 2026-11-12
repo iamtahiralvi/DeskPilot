@@ -339,17 +339,56 @@ function(start, full, filt, limit) {
 
 LOCATE_JS = r"""
 function(id) {
+  // Where to click element `id` right now: the middle of the part of it that is actually visible (not clipped by
+  // a scrolled list, dropdown or the viewport) and not covered by something else. Scrolls it into view if needed.
   const el = window.__dpm && window.__dpm.get(id);
   if (!el || !el.isConnected) return null;
-  let r = el.getBoundingClientRect();
   const off = () => { let ox = 0, oy = 0, w = el.ownerDocument.defaultView;
     while (w && w.frameElement) { const fr = w.frameElement.getBoundingClientRect(); ox += fr.left; oy += fr.top; w = w.parent; }
     return [ox, oy]; };
-  let [ox, oy] = off();
-  if (r.top + oy < 0 || r.bottom + oy > innerHeight || r.left + ox < 0 || r.right + ox > innerWidth) {
-    el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
-    r = el.getBoundingClientRect(); [ox, oy] = off();
+  const visibleRect = () => {     // element rect clipped by every scrolling/clipping ancestor and the viewport
+    const r = el.getBoundingClientRect();
+    let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+    const view = el.ownerDocument.defaultView;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const cs = view.getComputedStyle(p);
+      if (/(auto|scroll|hidden|clip)/.test(cs.overflow + cs.overflowX + cs.overflowY)) {
+        const pr = p.getBoundingClientRect();
+        l = Math.max(l, pr.left); t = Math.max(t, pr.top); rt = Math.min(rt, pr.right); b = Math.min(b, pr.bottom);
+      }
+    }
+    l = Math.max(l, 0); t = Math.max(t, 0);
+    rt = Math.min(rt, view.innerWidth); b = Math.min(b, view.innerHeight);
+    return {r, l, t, rt, b, ok: rt - l >= 2 && b - t >= 2 && (rt - l) * (b - t) >= 0.5 * Math.max(1, r.width * r.height)};
+  };
+  const hits = (x, y) => {      // would a click at (x, y) (element's own document coords) reach el?
+    const h = el.ownerDocument.elementFromPoint(x, y);
+    if (!h) return false;
+    if (h === el || el.contains(h)) return true;
+    if (h.contains(el) && h.tagName !== 'BODY' && h.tagName !== 'HTML') return true;
+    const lab = h.closest && h.closest('label');
+    return !!(lab && lab.control === el);
+  };
+  const point = (v) => {        // first spot inside the visible part that really hits el
+    const cx = (v.l + v.rt) / 2, cy = (v.t + v.b) / 2, dx = (v.rt - v.l) / 4, dy = (v.b - v.t) / 4;
+    for (const [x, y] of [[cx, cy], [cx - dx, cy], [cx + dx, cy], [cx, cy - dy], [cx, cy + dy], [v.l + 3, cy]])
+      if (hits(x, y)) return [x, y];
+    return null;
+  };
+  let v = visibleRect(), p = v.ok ? point(v) : null;
+  if (!p) {
+    el.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'instant'});   // scrolls inner lists too
+    v = visibleRect(); p = v.ok ? point(v) : null;
+    if (!p) { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); v = visibleRect(); p = point(v); }
   }
-  return {x: r.left + ox, y: r.top + oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight};
+  const [ox, oy] = off();
+  let cover = '';
+  if (!p) {
+    const h = el.ownerDocument.elementFromPoint((v.l + v.rt) / 2, (v.t + v.b) / 2);
+    if (h) cover = (h.getAttribute('aria-label') || h.innerText || h.tagName).replace(/\s+/g, ' ').trim().slice(0, 50);
+    p = [(v.l + v.rt) / 2, (v.t + v.b) / 2];
+  }
+  return {cx: p[0] + ox, cy: p[1] + oy, x: v.r.left + ox, y: v.r.top + oy, w: v.r.width, h: v.r.height,
+          vw: innerWidth, vh: innerHeight, sy: scrollY, covered: cover, clipped: !v.ok};
 }
 """

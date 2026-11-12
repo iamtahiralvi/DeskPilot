@@ -176,7 +176,7 @@ def diff(old: dict[str, str], new: dict[str, str]) -> tuple[list[str], list[str]
     return added, removed
 
 
-def find_nodes(root: Node, text: str | None, role: str | None, areas: list[Rect]) -> list[Node]:
+def find_nodes(root: Node, text: str | None, role: str | None, areas: list[Rect], onscreen: bool = True) -> list[Node]:
     t = (text or "").lower()
     out: list[Node] = []
 
@@ -184,7 +184,7 @@ def find_nodes(root: Node, text: str | None, role: str | None, areas: list[Rect]
         if n.role in SKIP_SUBTREE:
             return
         l, tp, r, b = n.rect
-        if n.visible and any(a.intersects(l, tp, r, b) for a in areas):
+        if not onscreen or (n.visible and any(a.intersects(l, tp, r, b) for a in areas)):
             ok = True
             if t and t not in (n.name or "").lower() and t not in str(n.value or "").lower() and t != n.aid.lower():
                 ok = False
@@ -288,6 +288,80 @@ class UIA:
                         value=self._prop(el, P_VALUE))
         except Exception:
             return None
+
+    def relocate(self, x: int, y: int, role: str, name: str, old_rect) -> tuple[int, int, int, int] | None:
+        """Where an element seen at `old_rect` is NOW, so a click lands on it even after the page scrolled, a list
+        expanded or the layout shifted. Returns a fresh rect whose center really shows that element (scrolling it
+        into view inside its list/page if needed), or None if it can't be found."""
+        if self._hits(x, y, name, old_rect):
+            return None  # still where it was: keep the snapshot rect
+        hwnd = _root_hwnd_at(x, y)
+        try:
+            import win32gui
+
+            fg = win32gui.GetForegroundWindow()
+        except Exception:
+            fg = 0
+        types = [t for t, r in ROLES.items() if r == role]
+        best, best_d = None, None
+        for h in dict.fromkeys(h for h in (fg, hwnd) if h):
+            try:
+                root = self.uia.ElementFromHandle(h)
+                cond = self.uia.CreatePropertyCondition(P_NAME, name)
+                if types:
+                    cond = self.uia.CreateAndCondition(cond, self.uia.CreatePropertyCondition(P_TYPE, types[0]))
+                found = root.FindAll(4, cond)  # descendants
+            except Exception:
+                continue
+            for i in range(found.Length if found else 0):
+                el = found.GetElement(i)
+                try:
+                    r = el.CurrentBoundingRectangle
+                except Exception:
+                    continue
+                if r.right - r.left < 2 or r.bottom - r.top < 2:
+                    continue
+                d = abs((r.left + r.right) / 2 - (old_rect[0] + old_rect[2]) / 2) + \
+                    abs((r.top + r.bottom) / 2 - (old_rect[1] + old_rect[3]) / 2)
+                if best_d is None or d < best_d:
+                    best, best_d = el, d
+        if best is None:
+            return None
+        rect = self._rect(best)
+        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+        if not self._hits(cx, cy, name, rect):
+            try:  # clipped by its list / scrolled away: ask the app to bring it into view
+                pat = best.GetCurrentPattern(10017)  # ScrollItemPattern
+                if pat:
+                    from uiautomation.uiautomation import _AutomationClient
+
+                    pat.QueryInterface(_AutomationClient.instance().UIAutomationCore.IUIAutomationScrollItemPattern
+                                       ).ScrollIntoView()
+                    import time
+
+                    time.sleep(0.25)
+                    rect = self._rect(best)
+            except Exception:
+                pass
+        return rect
+
+    @staticmethod
+    def _rect(el) -> tuple[int, int, int, int]:
+        r = el.CurrentBoundingRectangle
+        return r.left, r.top, r.right, r.bottom
+
+    def _hits(self, x: int, y: int, name: str, rect) -> bool:
+        """Does a click at (x, y) land on the element (name, rect)? True when the element under the point is it,
+        or something inside it (a label in a button), or it is inside what's under the point."""
+        n = self.at_point(x, y)
+        if not n:
+            return False
+        l, t, r, b = rect
+        nl, nt, nr, nb = n.rect
+        inside = nl >= l - 3 and nt >= t - 3 and nr <= r + 3 and nb <= b + 3
+        around = nl <= l + 3 and nt <= t + 3 and nr >= r - 3 and nb >= b - 3
+        return (inside and (not name or not n.name or n.name == name or name in n.name or n.name in name)) or (
+            around and n.name == name and bool(name))
 
     def at_point(self, x: int, y: int) -> Node | None:
         try:
@@ -402,3 +476,15 @@ def draw_marks(img, area: Rect, refs: list[RefInfo]):
         d.rectangle((l, t - 14, l + 8 * len(info.ref) + 4, t), fill=(255, 122, 26))
         d.text((l + 2, t - 14), info.ref, fill=(0, 0, 0))
     return img
+
+
+def _root_hwnd_at(x: int, y: int) -> int:
+    try:
+        import ctypes
+
+        import win32gui
+
+        h = win32gui.WindowFromPoint((x, y))
+        return ctypes.windll.user32.GetAncestor(h, 2) if h else 0
+    except Exception:
+        return 0

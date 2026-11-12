@@ -2,11 +2,13 @@
 
 | Result or symptom | Meaning | What to do |
 |---|---|---|
-| `PAUSED: the user moved the mouse` | The user touched the mouse while you moved it | Stop. Tell the user to keep the mouse still and resume with Ctrl+Alt+Esc or the panel |
+| `note: the user took the mouse…` | The user used the mouse; DeskPilot waited for them to let go and redid the step | Continue, but read the diff first: they may have changed the screen |
+| `the user has been using the mouse for 60s` | They are still working | Don't fight them. Wait, then call `act` again with the remaining steps |
+| `… is hidden behind "…"` | A popup, menu or sticky header covers the element | Close/scroll it, or `screenshot()` and click what you see |
 | `PAUSED` / `STOPPED` by the user | The user paused or stopped you | Stop at once and report. Never resume yourself |
 | `USER DENIED` | The user refused a permission dialog | Don't retry or work around it. Ask the user |
 | `not found: <text>` | No visible element matches | Check spelling, scroll, try a shorter text, `snapshot(scope="ocr")` |
-| A click hits the wrong thing | A stale ref or a moved layout | `find` again, then click the new ref |
+| A click hits the wrong thing | A stale ref or a moved layout | `screenshot()` to see what's there, then click the new ref or `[x, y]` |
 | Typing goes to the wrong place | Focus was elsewhere | Click the field first, or use `"into": "<field>"` |
 | Ctrl+L does nothing | The page captured the key | Click `Address and search bar` instead |
 | `no visible change` | The click didn't do anything visible | Verify with `find`; the site may still be loading: `{"wait": …}` |

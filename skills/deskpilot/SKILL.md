@@ -1,6 +1,6 @@
 ---
 name: deskpilot
-description: Operates the user's real Windows PC through the DeskPilot MCP tools (snapshot, find, act, launch, window, clipboard, routine, screenshot, done). Opens apps and websites, reads the screen as text, clicks, types and fills forms with the real mouse and keyboard, using few tokens. Use when the user asks to do something on their computer, screen or desktop, in a browser tab they have open, or in a desktop app such as Gmail, X, GitHub, File Explorer, Settings or Play Console.
+description: Operates the user's real Windows PC through the DeskPilot MCP tools (snapshot, find, act, launch, window, clipboard, routine, screenshot, done). Opens apps and websites, reads the screen as text (and looks at screenshots when text isn't enough), clicks, types and fills forms with the real mouse and keyboard, using few tokens. Use when the user asks to do something on their computer, screen or desktop, in a browser tab they have open, or in a desktop app such as Gmail, X, GitHub, File Explorer, Settings or Play Console.
 ---
 
 # Using the Windows desktop with DeskPilot
@@ -31,7 +31,8 @@ DeskPilot task:
    `b12`), visible text (`"Sign in"`), or `[x, y]` from the last screenshot.
    `act([{"click":"Compose"},{"type":"Hi Sam","into":"Message"},{"wait":"Draft saved","timeout":10}])`
 4. **Verify.** Read the diff that `act` returns (`+` new elements, `-` removed). If it is unclear, `find(text=…)`.
-   Use a screenshot only as a last resort, and crop it: `screenshot(ref="e12")`.
+   If the text doesn't tell you enough, look: `screenshot()` (or `screenshot(ref="window")`, `screenshot(ref="e12")`
+   for a cheaper crop) and click what you see with `{"click": [x, y]}` in the image's pixels.
 5. **Finish.** Always call `done(summary="…")`, also when you stop early or give up. It hides the overlay.
 
 ## Rules
@@ -45,6 +46,9 @@ DeskPilot task:
 - **Never click security or consent prompts**: "Allow remote debugging?", User Account Control, password
   managers. Those are the user's decision.
 - **USER DENIED**: don't retry and don't work around it. Tell the user.
+- **The user grabbed the mouse**: DeskPilot waits until they let go and redoes the step; the result starts with
+  `note: the user took the mouse…`. The screen may have changed, so read the diff (or take a screenshot) before
+  the next step. If it says they are still using the mouse, wait and call `act` again; don't fight them.
 - **PAUSED or STOPPED**: stop at once. Tell the user what is done and what is left. Never resume by yourself.
 - Stay on your screen. Don't close or move the user's windows unless the task needs it.
 
@@ -52,6 +56,10 @@ DeskPilot task:
 
 Cheapest first: `find(text=…)` → `snapshot(filter="…")` → `snapshot(scope="page")` → `snapshot(scope="ocr")`
 → `screenshot(ref=…)` → `screenshot()`.
+
+**When to take a screenshot** (don't struggle on in text): a dropdown, list or menu you can't read or that opens
+somewhere unexpected; a click that hit the wrong thing or did nothing; text you can't find; canvas, chart, map or
+image-heavy apps; checking how a form looks before the user sends it.
 
 - `e` refs come from Windows accessibility (desktop apps and the user's everyday browser). `b` refs come from the
   DeskPilot browser and also reach elements outside the visible area.
@@ -74,5 +82,6 @@ Read only the file you need:
 
 - [reference/act-steps.md](reference/act-steps.md): every `act` step with examples
 - [reference/web.md](reference/web.md): browsers, and patterns for Gmail, X, GitHub and search
+- [reference/dropdowns-and-screenshots.md](reference/dropdowns-and-screenshots.md): dropdowns, scrolling lists, when to take a screenshot, when the user grabs the mouse
 - [reference/troubleshooting.md](reference/troubleshooting.md): paused, not found, stale refs, focus, OCR, dialogs
 - [reference/routines.md](reference/routines.md): record and replay tasks with `{{params}}`

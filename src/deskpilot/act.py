@@ -57,7 +57,19 @@ def _key(vk: int = 0, scan: int = 0, flags: int = 0) -> INPUT:
 
 
 class UserInterrupted(Exception):
-    """The human moved the mouse while the agent was moving it."""
+    """The human moved the mouse while the agent was using it. `retry` = the step had no effect yet."""
+
+    def __init__(self, msg: str = "the user moved the mouse", retry: bool = True):
+        super().__init__(msg)
+        self.retry = retry
+
+
+class UserBusy(Exception):
+    """The human kept using the mouse for longer than the agent is willing to wait."""
+
+
+def buttons_down() -> bool:
+    return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x01, 0x02, 0x04))  # left, right, middle
 
 
 def cursor_pos() -> tuple[int, int]:
@@ -72,12 +84,43 @@ class Input:
         self.on_event = on_event or (lambda kind, **kw: None)
         self.speed = speed
         self.grace_until = 0.0  # ignore human mouse motion until then (e.g. just after they answered a dialog)
+        self.expect: tuple[int, int] | None = None  # where the agent last left the cursor (None = not tracking)
 
     def grace(self, seconds: float = 1.2) -> None:
         self.grace_until = time.time() + seconds
 
+    # ---------- the human's mouse ----------
+    def user_moved(self) -> bool:
+        """True when the human moved the cursor away from where the agent left it."""
+        if self.expect is None or time.time() < self.grace_until:
+            return False
+        cx, cy = cursor_pos()
+        return math.hypot(cx - self.expect[0], cy - self.expect[1]) > 30
+
+    def wait_for_user(self, idle: float = 1.5, timeout: float = 60.0, check=None) -> float:
+        """Wait until the human lets go of the mouse: no movement and no button held for `idle` seconds.
+        `check()` runs every tick (raise from it to abort, e.g. when the user pauses). Returns seconds waited;
+        raises UserBusy after `timeout`."""
+        start = time.time()
+        last, still = cursor_pos(), time.time()
+        while True:
+            time.sleep(0.1)
+            if check:
+                check()
+            now = time.time()
+            p = cursor_pos()
+            if math.hypot(p[0] - last[0], p[1] - last[1]) > 2 or buttons_down():
+                last, still = p, now
+            elif now - still >= idle:
+                self.expect = None
+                return now - start
+            if now - start > timeout:
+                raise UserBusy(f"the user has been using the mouse for {int(timeout)}s")
+
     # ---------- mouse ----------
     def move(self, x: int, y: int) -> None:
+        if self.user_moved():
+            raise UserInterrupted("the user moved the mouse")
         sx, sy = cursor_pos()
         dist = math.hypot(x - sx, y - sy)
         steps = max(1, min(40, int(dist / 25)))
@@ -86,7 +129,7 @@ class Input:
         for i in range(1, steps + 1):
             cx, cy = cursor_pos()
             if math.hypot(cx - last[0], cy - last[1]) > 30 and time.time() > self.grace_until:
-                raise UserInterrupted("You moved the mouse, so the agent stopped. Ask it to continue when ready.")
+                raise UserInterrupted("the user moved the mouse")
             t = i / steps
             e = 1 - (1 - t) ** 3  # ease-out
             nx, ny = round(sx + (x - sx) * e), round(sy + (y - sy) * e)
@@ -94,6 +137,7 @@ class Input:
             self.on_move(nx, ny)
             last = (nx, ny)
             time.sleep(duration / steps)
+        self.expect = last
 
     def click(self, x: int, y: int, button: str = "left", count: int = 1) -> None:
         self.move(x, y)
@@ -117,10 +161,14 @@ class Input:
         time.sleep(0.12)
         # small nudge so apps register a drag start
         user32.SetCursorPos(x1 + 6, y1 + 6)
+        self.expect = (x1 + 6, y1 + 6)
         time.sleep(0.08)
         try:
             self.move(x2, y2)
             time.sleep(0.12)
+        except UserInterrupted:
+            raise UserInterrupted("the user moved the mouse in the middle of a drag, so it was dropped early",
+                                  retry=False)
         finally:
             _send(_mouse(MOUSE_FLAGS[button][1]))
         self.on_event("click", x=x2, y=y2, button=button)

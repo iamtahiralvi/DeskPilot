@@ -66,7 +66,7 @@ The agent clicks by reference (`e12`) or by visible text (`"Install"`). After ea
 - **🖱️ One cursor.** The agent drives your real mouse pointer, so there is no second, fake cursor. A small "Claude" tag follows the pointer while the agent acts.
 - **🔲 Clear on-screen status.** A thin black-and-white border marks the controlled screen (dashed when paused), with a status chip and click ripples.
 - **🎛️ Control panel.** A floating panel shows the current step, recent activity and token use, with **Pause / Take over / Stop** buttons. When you have a second monitor, it sits there so it never covers the agent's work.
-- **⏹️ Always interruptible.** **Ctrl+Alt+Esc** pauses or resumes at any time. If you move the mouse while the agent is moving it, the agent pauses.
+- **⏹️ Always interruptible.** **Ctrl+Alt+Esc** pauses or resumes at any time. If you grab the mouse while the agent works, it steps aside, waits until you let go, then carries on (and tells the AI the screen may have changed).
 - **👻 Gets out of your way.** When a task finishes, the border, tag and panel disappear.
 - **🌐 Precise web control.** In Chrome, Edge or Brave, pages are read through the DevTools protocol (`b12 button "Create app"`), including off-screen elements. Clicks and typing still use the real mouse and keyboard.
 - **🔁 Routines.** Record a task once, add `{{placeholders}}`, and replay it with one call.
@@ -336,7 +336,7 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 | `window` | list, focus, minimize, maximize, restore, close, move_here |
 | `clipboard` | Get or set clipboard text |
 | `routine` | list, run, start, save, show or delete saved routines |
-| `screenshot` | Last-resort image: crop to a ref or a region, or draw ref marks |
+| `screenshot` | See the screen when text isn't enough: whole screen, one window (`ref="window"`/`"w3"`), an element or a region; click what you see by `[x, y]` |
 | `done` | Task finished: hides the border, tag and panel |
 
 ## Configuration
@@ -355,6 +355,7 @@ Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Ed
 | `redact_secrets` | Redact keys, tokens and card numbers from what the model sees |
 | `use_my_browser` | Default `false`: your everyday browser is read through the screen, with no prompt. `true` = also use DevTools on it (you approve Chrome's prompt) |
 | `hide_overlay_after_idle_seconds` | Hide the overlay when the agent goes quiet (default 30, `0` = never) |
+| `wait_for_user_mouse_seconds`, `user_mouse_idle_seconds` | When you grab the mouse, the agent waits for it to be still this long (default 1.5 s), for up to 60 s per call |
 
 Other files in `~/.deskpilot/`:
 - `session.json`: the chosen screen and mode

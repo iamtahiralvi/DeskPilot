@@ -1,7 +1,7 @@
 """Overlay (agent cursor, click ripples, screen border, status chip) + floating control panel.
 
 Runs as its own process (`python -m deskpilot.overlay`). JSON commands on stdin, one per line:
-  areas{rects,mode} move{x,y} click{x,y} label{text} state{v,text} log{text} stats{tokens,actions}
+  areas{rects,mode} move{x,y} click{x,y} label{text} state{v: idle|working|asking|waiting, text} log{text} stats{tokens,actions}
   paused{v: ""|paused|takeover|stopped|moved} hide show quit
 hide = task finished / agent idle: remove border, cursor and panel until the agent acts again.
 Writes user commands to stdout: PANIC PAUSE RESUME TAKEOVER GIVEBACK STOP "MODE strict|normal".
@@ -82,6 +82,7 @@ STATES = {  # state -> (label, colour, active?)  active = filled dot + solid bor
     "idle": ("Idle", T.FAINT, False),
     "working": ("Working", T.FG, True),
     "asking": ("Needs your OK", T.FG, True),
+    "waiting": ("Waiting · you have the mouse", T.MUTED, False),
     "paused": ("Paused", T.MUTED, False),
     "takeover": ("You're in control", T.MUTED, False),
     "stopped": ("Stopped", T.MUTED, False),
@@ -313,7 +314,7 @@ class Overlay:
             return
         # anything the agent (or the Ctrl+Alt+Esc hotkey) does brings the overlay back
         if op in ("show", "areas", "move", "click", "paused", "toggle_pause") or (
-                op == "state" and m.get("v") in ("working", "asking")):
+                op == "state" and m.get("v") in ("working", "asking", "waiting")):
             self.show()
         if op == "areas":
             self.set_areas(m["rects"], m.get("mode", "normal"))
@@ -391,6 +392,8 @@ class Overlay:
                 self.paused, "Agent paused  ·  Ctrl+Alt+Esc to resume")
         elif self.state == "asking":
             text = "Waiting for your permission"
+        elif self.state == "waiting":
+            text = f"You have the mouse  ·  {AGENT} continues when you let go"
         else:
             text = f"{AGENT} is using this screen  ·  Ctrl+Alt+Esc to pause"
         tw = int(6.9 * len(text)) + 56
@@ -416,7 +419,7 @@ class Overlay:
         # No fake cursor: the agent drives the real Windows cursor. While it is acting, a small name tag
         # rides next to the real pointer (read live, so it never lags behind a second arrow).
         labelled = self.label_text and now < self.label_until
-        if not self.paused and (labelled or now - self.last_activity < 1.5):
+        if not self.paused and self.state != "waiting" and (labelled or now - self.last_activity < 1.5):
             x, y = _cursor_pos()
             if l <= x < l + w and t <= y < t + h:
                 x, y = x - l, y - t

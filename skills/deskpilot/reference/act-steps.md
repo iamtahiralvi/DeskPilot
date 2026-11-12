@@ -48,9 +48,9 @@ Typing is about 12 ms per character. For text over ~200 characters, use `clipboa
 
 | Step | Example |
 |---|---|
-| wait for text | `{"wait": "Inbox", "timeout": 15}` |
+| wait for text | `{"wait": "Inbox", "timeout": 15}` (also counts text scrolled out of view) |
 | wait until gone | `{"wait": "Uploading", "gone": true, "timeout": 90}` |
-| fixed pause | `{"sleep": 1.5}` (max 30; prefer `wait`) |
+| fixed pause | `{"sleep": 1.5}` or `{"wait": 1.5}` (a number = seconds; max 30; prefer waiting for text) |
 
 ## Windows and apps
 

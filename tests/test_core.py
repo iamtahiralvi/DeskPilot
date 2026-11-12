@@ -1,3 +1,7 @@
+import sys
+
+import pytest
+
 from deskpilot.config import Rect
 from deskpilot.perceive import Node, OcrLine, RefTable, diff, find_nodes, format_tree, ocr_match
 from deskpilot.policy import DEFAULT_POLICY, Gate, Policy, normalize_combo
@@ -157,3 +161,32 @@ def test_same_page_matching():
     assert not same_page("https://x.com/home?tab=2", "https://x.com/home?tab=1")
     assert not same_page("https://github.com/iamtahiralvi", "https://github.com/iamtahiralvi/DeskPilot")
     assert not same_page("https://github.com", "chrome://newtab/")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows input")
+def test_user_moved_detection(monkeypatch):
+    from deskpilot import act
+
+    inp = act.Input()
+    assert not inp.user_moved()  # not tracking yet
+    monkeypatch.setattr(act, "cursor_pos", lambda: (500, 500))
+    inp.expect = (500, 510)
+    assert not inp.user_moved()  # jitter is fine
+    inp.expect = (100, 100)
+    assert inp.user_moved()
+    inp.grace(5)
+    assert not inp.user_moved()  # grace after a dialog
+    assert act.UserInterrupted().retry and not act.UserInterrupted("x", retry=False).retry
+
+
+def test_ask_click_skips_passive_and_content_cards():
+    p = Policy(rules=dict(DEFAULT_POLICY))
+    assert p.check({"kind": "click", "name": "Post", "role": "button"}).level == "ask"
+    assert p.check({"kind": "click", "name": "Create Post", "role": "link"}).level == "ask"
+    assert p.check({"kind": "click", "name": "Delete", "role": ""}).level == "ask"
+    assert p.check({"kind": "click", "name": "Who can post,", "role": "slider"}).level == "allow"
+    assert p.check({"kind": "click", "name": "Actions available for this post", "role": "group"}).level == "allow"
+    assert p.check({"kind": "click", "name": "Developer communications Used to send news", "role": "checkbox"}
+                   ).level == "allow"
+    long_link = "u/someone replied to your post in r/MusicTeachers My students have a homework journal 49m ago"
+    assert p.check({"kind": "click", "name": long_link, "role": "link"}).level == "allow"

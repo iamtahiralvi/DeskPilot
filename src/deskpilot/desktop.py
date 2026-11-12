@@ -15,7 +15,7 @@ import win32gui
 
 from . import routines as R
 from . import winutil
-from .act import Input, UserInterrupted
+from .act import Input, UserBusy, UserInterrupted
 from .browser import BROWSER_EXES, Browsers, launch_agent_browser
 from .config import Rect, Session, monitors
 from .perceive import (EDITABLE, UIA, RefTable, describe, diff, draw_marks, encode_jpeg, find_nodes, format_tree,
@@ -113,6 +113,11 @@ class Desktop:
             self.idle_hide = float(self.gate.policy.rules.get("hide_overlay_after_idle_seconds", 30) or 0)
         except (TypeError, ValueError):
             self.idle_hide = 30.0
+        try:  # when the user grabs the mouse: wait this long for them to let go (0 = give up at once)
+            self.user_wait = float(self.gate.policy.rules.get("wait_for_user_mouse_seconds", 60))
+            self.user_idle = float(self.gate.policy.rules.get("user_mouse_idle_seconds", 1.5) or 1.5)
+        except (TypeError, ValueError):
+            self.user_wait, self.user_idle = 60.0, 1.5
 
     # ------------------------------------------------------------ overlay lifetime
     def busy(self):
@@ -179,6 +184,16 @@ class Desktop:
         finally:
             # The user just moved the mouse to click Allow/Deny: that is not "taking over".
             self.input.grace(1.5)
+            self.ui_state("working")
+
+    def _yield_to_user(self) -> float:
+        """The human grabbed the mouse: step aside, show that on screen, and continue once they let go."""
+        self.ui_state("waiting")
+        self.ui_log("✋ you have the mouse · continuing when you let go")
+        audit({"event": "yield"})
+        try:
+            return self.input.wait_for_user(idle=self.user_idle, timeout=self.user_wait, check=self._check_paused)
+        finally:
             self.ui_state("working")
 
     def _input_event(self, kind, **kw):
@@ -460,9 +475,13 @@ class Desktop:
         if screen is not None and self.session.monitor == "all":
             area = self.areas[max(0, min(screen - 1, len(self.areas) - 1))]
         if ref:
-            rect = self._ref_rect(ref)
+            if ref == "window" or re.fullmatch(r"w\d+", ref):
+                rect = self._window_target(None if ref == "window" else ref).rect
+                pad = 0
+            else:
+                rect = self._ref_rect(ref)
+                pad = 40
             l, t, r, b = rect
-            pad = 40
             nl, nt = max(area.left, l - pad), max(area.top, t - pad)
             area = Rect(nl, nt, max(10, min(r + pad, area.right) - nl), max(10, min(b + pad, area.bottom) - nt))
         elif region:
@@ -476,7 +495,8 @@ class Desktop:
             draw_marks(img, area, [i for i in infos if i])
         data, scale = encode_jpeg(img, max_side)
         self.shot = (area.left, area.top, scale)
-        note = f"{int(img.width * scale)}x{int(img.height * scale)} image; [x,y] targets use image pixels"
+        note = (f"{int(img.width * scale)}x{int(img.height * scale)} image of the screen as it is now. Click what you see "
+                f"with [x,y] in these image pixels, e.g. act([{{\"click\": [x, y]}}]); region=[x,y,w,h] zooms in.")
         return data, note
 
     # ------------------------------------------------------------ targets
@@ -489,22 +509,54 @@ class Desktop:
         return info.rect
 
     def _locate_web(self, ref: str) -> tuple[int, int]:
+        """Screen point to click a b-ref NOW. Asks the page where the element is (scrolling it into view inside its
+        list/dropdown if needed), waits until it stops moving (lists that slide open, pages that scroll), and refuses
+        to click when something else covers it, so a click never lands on a neighbour."""
         info = self.web[ref]
-        try:
-            r = self.browsers.locate(info["page"], ref)
-        except Exception as e:
-            raise AgentError(f"page changed ({str(e)[:60]}); take a new snapshot")
-        if not r:
-            raise AgentError(f"{ref} is gone from the page; take a new snapshot")
+        prev = None
+        r = None
+        for _ in range(8):
+            try:
+                r = self.browsers.locate(info["page"], ref)
+            except Exception as e:
+                raise AgentError(f"page changed ({str(e)[:60]}); take a new snapshot")
+            if not r:
+                raise AgentError(f"{ref} is gone from the page; take a new snapshot")
+            pos = (round(r["cx"]), round(r["cy"]), r.get("sy"))
+            if pos == prev:
+                break
+            prev = pos
+            time.sleep(0.08)
+        if r.get("covered"):
+            raise AgentError(f'{ref} "{info["name"][:40]}" is hidden behind "{r["covered"]}" (a popup, menu or '
+                             "header); close or scroll it first, or take a screenshot to see the screen")
         cr = self._content_rect(info["hwnd"])
         if not cr:
             x, y = ((info["rect"][0] + info["rect"][2]) // 2, (info["rect"][1] + info["rect"][3]) // 2)
             return x, y
         scale = (cr[2] - cr[0]) / max(1, r["vw"])
-        cx = r["x"] + min(r["w"] / 2, max(r["w"], 1) - 1)
-        cy = r["y"] + r["h"] / 2
-        time.sleep(0.05)
-        return int(cr[0] + cx * scale), int(cr[1] + cy * scale)
+        info["rect"] = (int(cr[0] + r["x"] * scale), int(cr[1] + r["y"] * scale),
+                        int(cr[0] + (r["x"] + r["w"]) * scale), int(cr[1] + (r["y"] + r["h"]) * scale))
+        return int(cr[0] + r["cx"] * scale), int(cr[1] + r["cy"] * scale)
+
+    def _locate_uia(self, ref: str, info) -> tuple[int, int]:
+        """Screen point to click an e-ref NOW. The snapshot position goes stale when the page scrolls or a list
+        expands; check what is under that point and, if it is no longer the element, find where it moved to."""
+        x, y = info.center
+        if info.role == "ocr" or not info.name:
+            return x, y
+        rect = None
+        last = None
+        for _ in range(4):  # wait out slide-open animations / smooth scrolling
+            rect = self.uia.relocate(x, y, info.role, info.name, info.rect)
+            if rect is None or rect == last:
+                break
+            last = rect
+            time.sleep(0.1)
+        if rect is None:
+            return x, y
+        info.rect = tuple(rect)
+        return info.center
 
     def _resolve(self, target) -> tuple[int, int, str, dict]:
         """target -> (x, y, name, info). Accepts ref 'e12'/'b12', [x, y] image/screen px, or visible text."""
@@ -525,7 +577,7 @@ class Desktop:
                 info = self.refs.get(t)
                 if not info:
                     raise AgentError(f"unknown ref {t}; take a new snapshot")
-                x, y = info.center
+                x, y = self._locate_uia(t, info)
                 return x, y, info.name, {"role": info.role, "editable": info.editable, "password": info.password}
             hits = self._find(t, None, 1)
             if hits:
@@ -568,22 +620,38 @@ class Desktop:
                 return msg
         done = 0
         err = None
+        notes: list[str] = []
+        self.input.expect = None  # the user may use the mouse between calls; only watch it during this batch
         try:
             for st in steps:
-                self._check_paused()
-                self.ui_log(_step_text(st))
-                portable = self._portable(st)
-                self._step(st)
+                tries = 0
+                while True:
+                    self._check_paused()
+                    if tries == 0:
+                        self.ui_log(_step_text(st))
+                    portable = self._portable(st)
+                    try:
+                        self._step(st)
+                        break
+                    except UserInterrupted as e:
+                        if not e.retry:
+                            raise AgentError(f"{e}. Check the screen before trying again")
+                        tries += 1
+                        if tries > 3:
+                            raise AgentError("the user keeps using the mouse; ask them before continuing")
+                        waited = self._yield_to_user()
+                        notes.append(f"note: the user took the mouse during step {done + 1}; waited {waited:.0f}s "
+                                     "until they let go, then redid that step. The screen may have changed.")
                 done += 1
                 self.actions += 1
                 if self.recording is not None:
                     self.recording.append(portable)
-        except UserInterrupted as e:
-            self._set_pause("moved")
-            err = str(e)
+        except UserBusy as e:
+            err = (f"{e}, so this step was not done. They are working on the screen right now: do not fight them. "
+                   "Call act again with the remaining steps when you want to continue (it waits for them to let go).")
         except (AgentError, ValueError) as e:
             err = str(e)
-        res = []
+        res = list(notes)
         if err:
             res.append(f"step {done + 1} failed: {err}" + (f" ({done} steps done)" if done else ""))
             self.ui_log(f"✗ {err[:60]}")
@@ -702,6 +770,9 @@ class Desktop:
             self._require({"kind": "drag", "name": name})
             self.input.drag(x1, y1, x2, y2, button)
             return
+        if "wait" in st and isinstance(st["wait"], (int, float)) and not isinstance(st["wait"], bool):
+            time.sleep(min(float(st["wait"]), 30))  # {"wait": 5} means "wait 5 seconds", not "wait for the text 5"
+            return
         if "wait" in st:
             self._wait(str(st["wait"]), float(st.get("timeout", 10)), bool(st.get("gone", False)))
             return
@@ -749,7 +820,8 @@ class Desktop:
         try:
             if page:
                 return bool(self.browsers.extract(page, True, text, 1)["items"])
-            return bool(find_nodes(self.uia.tree(w.hwnd), text, None, self.areas))
+            # count text that is on the page but scrolled out of view too: "wait" means "has it loaded?"
+            return bool(find_nodes(self.uia.tree(w.hwnd), text, None, self.areas, onscreen=False))
         except Exception:
             return False
 

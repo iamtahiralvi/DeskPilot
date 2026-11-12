@@ -13,7 +13,8 @@
 - **The user's everyday Chrome, Edge or Brave**: read through Windows accessibility (`e` refs). Only the visible
   part of the page is listed, so scroll to reach more. This needs no setup and never shows a prompt.
 - **The DeskPilot browser** (`launch("agent browser https://…")`): a separate Chrome profile read through DevTools
-  (`b` refs), including elements outside the visible area, which are scrolled into view before a click.
+  (`b` refs), including elements outside the visible area or inside a scrolling list, which are scrolled into view
+  before a click (see [dropdowns-and-screenshots.md](dropdowns-and-screenshots.md)).
   Use it when precision matters and the user doesn't need their own logins. The user signs in there once.
 - If "Allow remote debugging?" appears, never click it. The user decides.
 

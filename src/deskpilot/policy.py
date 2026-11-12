@@ -46,6 +46,10 @@ DEFAULT_POLICY = {
     # Hide the border / agent cursor / panel when the agent has made no call for this long (0 = never).
     # The agent also hides it right away by calling done() when a task is finished.
     "hide_overlay_after_idle_seconds": 30,
+    # When you grab the mouse while the agent works, it steps aside and continues once the mouse has been still
+    # (and no button held) for user_mouse_idle_seconds. It gives up the current call after this many seconds.
+    "wait_for_user_mouse_seconds": 60,
+    "user_mouse_idle_seconds": 1.5,
     "ask_click_words_extra": ["rollout", "roll out", "start rollout", "release to production", "unpublish",
                               "send for review", "delete app", "remove app"],
 }
@@ -99,7 +103,13 @@ class Policy:
                 return Decision("deny", f"'{name}' is on your deny list")
             # Clicking into a text box only focuses it (X's composer is literally named "Post text").
             text_box = a.get("role") in ("edit", "doc", "document", "combo", "textbox", "searchbox")
-            m = not text_box and self._ask_click and self._ask_click.search(name)
+            # Ticking a box, moving a slider or opening a group/tab never sends or deletes anything by itself
+            # ("Who can post" slider, "Actions available for this post" group).
+            passive = a.get("role") in _PASSIVE_ROLES
+            # A very long link is a content card (a notification "u/x replied to your post in r/y …"), not a
+            # Post / Delete / Send button.
+            card = a.get("role") == "link" and len(name) > 80
+            m = not (text_box or passive or card) and self._ask_click and self._ask_click.search(name)
             if m:
                 return Decision("ask", f"click '{name}' ({m.group(1)})", f"click:{name.lower()}")
         if kind == "key":
@@ -125,6 +135,9 @@ class Policy:
             return Decision("ask", a.get("summary") or f"{kind} {name}".strip(), "")
         return Decision("allow")
 
+
+_PASSIVE_ROLES = {"checkbox", "radio", "slider", "group", "tab", "tabs", "heading", "text", "row", "treeitem",
+                  "list", "pane", "image", "spinner", "headeritem"}
 
 _ALIASES = {"control": "ctrl", "del": "delete", "escape": "esc", "return": "enter", "windows": "win",
             "cmd": "win", "super": "win", "option": "alt"}
