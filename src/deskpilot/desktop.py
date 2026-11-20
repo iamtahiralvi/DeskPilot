@@ -13,14 +13,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 import win32gui
 
-from . import killswitch
+from . import clip, killswitch
 from . import routines as R
+from . import timeline as TL
+from .screenlock import Busy, ScreenLock
 from . import winutil
 from .act import Input, UserBusy, UserInterrupted
 from .browser import BROWSER_EXES, Browsers, launch_agent_browser
 from .config import Rect, Session, monitors
-from .perceive import (EDITABLE, UIA, RefTable, describe, diff, draw_marks, encode_jpeg, find_nodes, format_tree,
-                       grab, ocr, ocr_match, _clip)
+from .perceive import (EDITABLE, UIA, RefTable, changed, describe, diff, diff_box, draw_marks, encode_jpeg,
+                       find_nodes, format_tree, grab, is_black, moving_box, norm_text, ocr, ocr_match, thumb, _clip)
 from .policy import Gate, audit, normalize_combo
 from .privacy import Privacy, black_out
 
@@ -106,8 +108,16 @@ class Desktop:
         self.last: dict = {"hwnd": None, "by_ref": {}}
         self.shot = None  # (left, top, scale) of the last screenshot
         self.pause_reason = ""
-        # False at the start of every task: the first act() then shows the screen instead of acting blind.
-        self.oriented = False
+        # When the agent last looked (snapshot, find, screenshot of any size). An act() with no look in the last
+        # look_fresh_seconds shows the screen instead of acting blind. 0 = must look (start, or after a pause).
+        self.last_look = 0.0
+        try:
+            self.look_fresh = float(self.gate.policy.rules.get("look_fresh_seconds", 60))
+        except (TypeError, ValueError):
+            self.look_fresh = 60.0
+        self.task_log: list[str] = []  # steps of the current task, returned by done()
+        self._moving = None       # thumb box of a screen area that never stops changing (video), ignored
+        self._last_thumb = None
         self.recording: list | None = None
         self.tokens = 0
         self.task_tokens = 0
@@ -127,6 +137,13 @@ class Desktop:
         except (TypeError, ValueError):
             self.user_wait, self.user_idle = 60.0, 1.5
         self.look_first = bool(self.gate.policy.rules.get("look_before_acting", True))
+        self.screen_lock = ScreenLock()
+        try:
+            keep = float(self.gate.policy.rules.get("timeline_keep_days", 7))
+        except (TypeError, ValueError):
+            keep = 7.0
+        self.timeline = TL.Timeline(bool(self.gate.policy.rules.get("timeline", True)), keep, self.screen_lock.label)
+        self._typed_secret = False
         try:
             self.budget = int(self.gate.policy.rules.get("token_budget_per_task", 100000) or 0)
         except (TypeError, ValueError):
@@ -154,16 +171,31 @@ class Desktop:
             self.pause_reason = ""
             self.overlay.send({"op": "paused", "v": ""})
         self.task_tokens = 0
-        self.oriented = False  # next task: look before acting
+        steps, self.task_log = self.task_log, []
+        self._moving = None
+        if self.screen_lock.held:
+            self.screen_lock.release()
+            self.timeline.record("✓ " + (summary or "task finished") if reason == "done" else "task went idle",
+                                 kind="mark")
         self._send_stats()
         if summary:
             self.ui_log("✓ " + summary)
         self.ui_state("idle")
         self.overlay.hide()
         audit({"event": "finish", "reason": reason, **({"summary": summary[:200]} if summary else {})})
-        return "Overlay hidden. Tell the user what you did." + (
+        out = "Overlay hidden. Tell the user what you did." + (
             f" Note: the user has you {self.pause_reason.upper()}; they unlock it from the panel next time."
             if self.paused else "")
+        if reason == "done" and steps:
+            shown = steps[-40:]
+            out += f"\nWhat you did this task ({len(steps)} steps" + (", last 40" if len(steps) > 40 else "") + "):\n"
+            out += "\n".join(shown)
+            if self.timeline.enabled:
+                try:
+                    out += f"\nStep-by-step pictures for the user: {TL.build_html()}"
+                except OSError:
+                    pass
+        return out
 
     # ------------------------------------------------------------ plumbing
     def _init_thread(self):
@@ -194,7 +226,7 @@ class Desktop:
             self._set_pause({"PAUSE": "paused", "TAKEOVER": "takeover", "STOP": "stopped"}[cmd])
         elif cmd in ("RESUME", "GIVEBACK"):
             if self.pause_reason in ("paused", "takeover", "moved", "stopped"):
-                self.oriented = False  # the user may have changed the screen meanwhile
+                self.last_look = 0.0  # the user may have changed the screen meanwhile
             if self.pause_reason == "budget":
                 self.task_tokens = 0  # the user allowed another budget's worth
                 self._send_stats()
@@ -405,10 +437,12 @@ class Desktop:
             lines.append("(no accessible elements; use scope='ocr' or screenshot)")
         return lines, by_ref
 
-    def snapshot(self, scope: str = "window", filter: str | None = None, max_nodes: int = 250) -> str:
+    def snapshot(self, scope: str = "window", filter: str | None = None, max_nodes: int = 250,
+                 region=None) -> str:
         self.ensure_ready()
-        if scope == "ocr":
-            return self._ocr_snapshot(filter)
+        if scope == "ocr" or region is not None:
+            self.last_look = time.time()
+            return self._ocr_snapshot(filter, None if region is None else self._region_rect(region))
         wins = [w for w in winutil.windows() if winutil.on_area(w, self.areas)]
         out = [f"{self._screen_label()}"]
         by_ref_all: dict[str, str] = {}
@@ -430,7 +464,7 @@ class Desktop:
         if scope not in ("screen",) and len(wins) > 1:
             out.append("other windows: " + ", ".join(f'{self.wref(w.hwnd)} "{w.title[:40]}"' for w in wins[1:8]))
         self.last = {"hwnd": wins[0].hwnd, "by_ref": by_ref_all, "scope": scope, "filter": filter}
-        self.oriented = True
+        self.last_look = time.time()
         return "\n".join(out)
 
     def _taskbars(self) -> list[int]:
@@ -459,9 +493,12 @@ class Desktop:
         img = grab(area)
         return black_out(img, area, self._private_rects(area))
 
-    def _ocr_snapshot(self, filt: str | None) -> str:
-        out = [f"{self._screen_label()} (OCR text; refs are clickable)"]
-        for a in self.areas:
+    def _ocr_snapshot(self, filt: str | None, region: Rect | None = None) -> str:
+        if region:
+            out = [f"text in {region.left},{region.top} {region.width}x{region.height} (OCR; refs are clickable)"]
+        else:
+            out = [f"{self._screen_label()} (OCR text; refs are clickable)"]
+        for a in [region] if region else self.areas:
             for ln in ocr(a, self._grab_safe(a)):
                 if filt and filt.lower() not in ln.text.lower():
                     continue
@@ -472,6 +509,7 @@ class Desktop:
     def find(self, text: str | None = None, role: str | None = None, limit: int = 15) -> str:
         self.ensure_ready()
         hits = self._find(text, role, limit)
+        self.last_look = time.time()
         if not hits:
             return f"not found: {text or role}"
         return "\n".join(hits)
@@ -537,18 +575,74 @@ class Desktop:
             x, y, w, h = region
             ox, oy, sc = self.shot or (area.left, area.top, 1.0)
             area = Rect(int(ox + x / sc), int(oy + y / sc), int(w / sc), int(h / sc))
-        img = self._grab_safe(area)
+        img, ms, settled = self._settle(area)
+        black = self._black_hint(img, area)
         if marks:
             infos = [self.refs.get(r) for r in self.last.get("by_ref", {}) if r.startswith("e")]
             infos += [type("I", (), {"ref": r, **self.web[r]}) for r in self.last.get("by_ref", {}) if r in self.web]
             draw_marks(img, area, [i for i in infos if i])
         data, scale = encode_jpeg(img, max_side)
         self.shot = (area.left, area.top, scale)
-        if not ref and not region:
-            self.oriented = True  # saw the whole screen
-        note = (f"{int(img.width * scale)}x{int(img.height * scale)} image of the screen as it is now. Click what you see "
-                f"with [x,y] in these image pixels, e.g. act([{{\"click\": [x, y]}}]); region=[x,y,w,h] zooms in.")
-        return data, note
+        self.last_look = time.time()
+        w, h = int(img.width * scale), int(img.height * scale)
+        when = (f"settled: nothing moved for a moment ({ms} ms after the call)" if settled else
+                f"the screen was STILL CHANGING after {ms} ms (animation or loading): look again before relying on it")
+        if self._moving and settled:
+            when += " (ignoring one area that keeps moving, e.g. a video)"
+        crop = bool(ref or region)
+        note = (f"{w}x{h} image of {'a CROP of ' if crop else ''}the screen; {when}. "
+                f"Click what you see with [x,y] in THESE image pixels, e.g. act([{{\"click\": [x, y]}}])"
+                + (" (DeskPilot maps them back to the screen; [x,y] from earlier screenshots no longer apply)"
+                   if crop else "; region=[x,y,w,h] zooms in") + ".")
+        return data, (black + "\n" + note) if black else note
+
+    def _settle(self, area: Rect, max_wait: float = 1.2):
+        """Grab the screen once it has stopped changing (two frames ~80 ms apart that match), so the picture
+        shows the result of the last action rather than the frame before it. Returns (masked image, ms, settled)."""
+        start = time.time()
+        img = grab(area)
+        prev = cur = thumb(img)
+        settled = False
+        last_box = None
+        same = self._last_thumb is not None and self._last_thumb.size == prev.size
+        mask = self._moving if same else None  # a video found by the previous call is probably still playing
+        while time.time() - start < max_wait:
+            time.sleep(0.08)
+            img = grab(area)
+            cur = thumb(img)
+            box = diff_box(prev, cur, mask)
+            if box is None:
+                settled = True
+                break
+            # The same spot changing frame after frame is a video or animation, not the app reacting: ignore it.
+            m = moving_box(last_box, box, cur.size)
+            if m:
+                mask = m if mask is None else (min(mask[0], m[0]), min(mask[1], m[1]),
+                                               max(mask[2], m[2]), max(mask[3], m[3]))
+            last_box, prev = box, cur
+        self._moving, self._last_thumb = mask, cur
+        return black_out(img, area, self._private_rects(area)), int((time.time() - start) * 1000), settled
+
+    def _black_hint(self, img, area: Rect) -> str:
+        """An all-black capture usually means the wrong screen (or a locked/sleeping one): say where windows are."""
+        if not is_black(img):
+            return ""
+        mons = monitors()
+        elsewhere = []
+        for w in winutil.windows()[:12]:
+            if winutil.on_area(w, self.areas) or self._private(w):
+                continue
+            cx, cy = w.center
+            scr = next((i + 1 for i, m in enumerate(mons) if m.contains(cx, cy)), None)
+            if scr:
+                elsewhere.append(f'{self.wref(w.hwnd)} "{w.title[:40]}" is on screen {scr}')
+        msg = (f"WARNING: this image is (almost) all black. You control {self._screen_label()}; it may be off, "
+               "asleep, locked, or showing protected video.")
+        if elsewhere:
+            msg += (" Windows on other screens: " + "; ".join(elsewhere[:5]) + ". Bring one here with "
+                    "window('move_here', 'wN'), or ask the user to let you control that screen "
+                    "(screen_info(op='switch', screen='N')).")
+        return msg
 
     # ------------------------------------------------------------ targets
     def _ref_rect(self, ref: str):
@@ -610,12 +704,23 @@ class Desktop:
         return info.center
 
     def _resolve(self, target) -> tuple[int, int, str, dict]:
-        """target -> (x, y, name, info). Accepts ref 'e12'/'b12', [x, y] image/screen px, or visible text."""
+        """target -> (x, y, name, info). Accepts ref 'e12'/'b12', [x, y] image/screen px, visible text,
+        or {"ocr": "Save Widget", "nth": 1, "in": region} (text found on the screen image by OCR)."""
         if isinstance(target, (list, tuple)) and len(target) == 2:
             ox, oy, sc = self.shot or (self.areas[0].left, self.areas[0].top, 1.0)
             x, y = int(ox + target[0] / sc), int(oy + target[1] / sc)
+            if not self.session.allowed(x, y):
+                crop = self.shot and (ox, oy) != (self.areas[0].left, self.areas[0].top)
+                raise AgentError(
+                    f"[{target[0]}, {target[1]}] maps to screen point ({x},{y}), outside the screen you control. "
+                    "[x,y] are read in the pixels of your LAST screenshot"
+                    + (f", which was a crop starting at screen ({ox},{oy}) at scale {sc:.2f}" if crop else "")
+                    + ". Use coordinates from that image, or take a new screenshot() first")
             n = self.uia.at_point(x, y)
-            return x, y, (n.name if n else ""), {"role": n.role if n else ""}
+            return x, y, (n.name if n else ""), {"role": n.role if n else "", "rect": n.rect if n else None}
+        if isinstance(target, dict) and "ocr" in target:
+            name, rect = self._ocr_locate(str(target["ocr"]), int(target.get("nth", 1) or 1), target.get("in"))
+            return (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2, name, {"role": "ocr", "rect": rect}
         if isinstance(target, str):
             t = target.strip()
             if re.fullmatch(r"b\d+", t):
@@ -623,18 +728,63 @@ class Desktop:
                     raise AgentError(f"unknown ref {t}; take a new snapshot")
                 x, y = self._locate_web(t)
                 i = self.web[t]
-                return x, y, i["name"], {"role": i["role"], "editable": i["editable"], "password": i["password"]}
+                return x, y, i["name"], {"role": i["role"], "editable": i["editable"], "password": i["password"],
+                                         "rect": i["rect"]}
             if re.fullmatch(r"e\d+", t):
                 info = self.refs.get(t)
                 if not info:
                     raise AgentError(f"unknown ref {t}; take a new snapshot")
                 x, y = self._locate_uia(t, info)
-                return x, y, info.name, {"role": info.role, "editable": info.editable, "password": info.password}
+                return x, y, info.name, {"role": info.role, "editable": info.editable, "password": info.password,
+                                         "rect": info.rect}
             hits = self._find(t, None, 1)
             if hits:
                 return self._resolve(hits[0].split()[0])
             raise AgentError(f'no element with text "{t}" on screen')
         raise AgentError(f"bad target {target!r}")
+
+    def _ocr_locate(self, text: str, nth: int = 1, where=None) -> tuple[str, tuple[int, int, int, int]]:
+        """Find text on the screen image by OCR (canvas apps such as Flutter web have no accessible elements).
+        Exact word matches come first, then reading order (top to bottom, left to right)."""
+        areas = [self._region_rect(where)] if where is not None else self.areas
+        hits = []
+        for a in areas:
+            hits += ocr_match(ocr(a, self._grab_safe(a)), text)
+        if not hits:
+            raise AgentError(f'"{text}" not found on the screen by OCR; take a screenshot to see what is there')
+        q = text.lower().strip()
+        hits.sort(key=lambda h: (h[0].lower().strip() != q, h[1][1] // 12, h[1][0]))
+        if nth > len(hits):
+            raise AgentError(f'only {len(hits)} match(es) for "{text}" on screen, not {nth}')
+        return hits[nth - 1]
+
+    def _region_rect(self, spec) -> Rect:
+        """A screen area: None/"screen" = your screen, "window"/"w3" = a window, "e12"/"b12" = an element,
+        [x,y,w,h] = pixels of the last screenshot (like screenshot(region=...)), {"ocr": "text"} = around that text."""
+        area = self.areas[0]
+        if spec in (None, True, "screen", ""):
+            return area
+        if isinstance(spec, dict) and "ocr" in spec:
+            _, (l, t, r, b) = self._ocr_locate(str(spec["ocr"]), int(spec.get("nth", 1) or 1))
+            pad = int(spec.get("pad", 12))
+            l, t, r, b = l - pad, t - pad, r + pad, b + pad
+        elif isinstance(spec, (list, tuple)) and len(spec) == 4:
+            x, y, w, h = (float(v) for v in spec)
+            ox, oy, sc = self.shot or (area.left, area.top, 1.0)
+            l, t = int(ox + x / sc), int(oy + y / sc)
+            r, b = l + int(w / sc), t + int(h / sc)
+        elif isinstance(spec, str) and (spec == "window" or re.fullmatch(r"w\d+", spec)):
+            l, t, r, b = self._window_target(None if spec == "window" else spec).rect
+        elif isinstance(spec, str) and re.fullmatch(r"[eb]\d+", spec):
+            l, t, r, b = self._ref_rect(spec)
+        else:
+            raise AgentError(f"bad region {spec!r}: use [x,y,w,h], 'window', a ref, or {{\"ocr\": \"text\"}}")
+        a = next((a for a in self.areas if a.intersects(l, t, r, b)), None)
+        if not a:
+            raise AgentError(f"region {spec!r} is outside the screen you control")
+        l, t = max(l, a.left), max(t, a.top)
+        r, b = min(r, a.right), min(b, a.bottom)
+        return Rect(l, t, max(4, r - l), max(4, b - t))
 
     def _name_of(self, ref: str) -> str:
         if ref in self.web:
@@ -662,15 +812,61 @@ class Desktop:
     def _orient(self) -> str | None:
         """First action of a task without having looked: show the screen instead of acting on assumptions
         (another window may be on top, the page may differ, old refs may point at the wrong thing)."""
-        if self.oriented or not self.look_first:
+        if not self.look_first or (self.last_look and time.time() - self.last_look < self.look_fresh):
             return None
         self.ui_log("👀 looking at the screen before acting")
         snap = self.snapshot()
         audit({"event": "orient"})
-        return ("NOT DONE YET: this is the first action of the task, so here is the screen as it is right now. "
+        return (f"NOT DONE YET: you haven't looked at the screen in the last {self.look_fresh:g}s (or the user paused "
+                "or took over since), so here is the screen as it is right now. "
                 "Read it: which window is on top, what page or state it is in, what is focused. Then send act "
                 "again with steps that fit THIS screen (use the refs below; refs from before may be stale). "
                 "If what you need is not here, use launch() or window().\n" + snap)
+
+    def _claim(self):
+        """Take the PC-wide one-AI-at-a-time lock before touching mouse or keyboard."""
+        try:
+            self.screen_lock.claim()
+        except Busy as e:
+            self.ui_log("⏳ another AI session has the computer")
+            raise AgentError(str(e))
+
+    def _log_step(self, st, ok: bool = True, why: str = "", img=None):
+        """Timeline entry for one step, with a small picture of the screen right after it (already masked)."""
+        text = self._safe_step_text(st)
+        self.task_log.append(f"{len(self.task_log) + 1}. {text}" + ("" if ok else f"  ✗ {why[:80]}"))
+        if not self.timeline.enabled:
+            return
+        if not ok:
+            text += f"  ✗ {why[:120]}"
+        self.timeline.record(text, ok=ok, img=img if ok else None)
+
+    def _safe_step_text(self, st) -> str:
+        if self._typed_secret or (isinstance(st, dict) and "type" in st and st.get("secret")):
+            return "type *** (password field)"
+        return self.privacy.text(_step_text(st))
+
+    def _after_step(self, st, before):
+        """Screen right after a step, and whether it changed. Steps that should change something get up to
+        0.6 s for the app to redraw, so a slow repaint isn't reported as 'nothing happened'."""
+        area = self.areas[0]
+        deadline = time.time() + (0.6 if _kind(st) in EFFECT_STEPS else 0)
+        try:
+            while True:
+                img = grab(area)
+                th = thumb(img)
+                moved = changed(before, th, self._moving)
+                if moved or time.time() >= deadline:
+                    return black_out(img, area, self._private_rects(area)), th, moved
+                time.sleep(0.1)
+        except Exception:  # a failed capture must not hide what the steps did; assume it changed (no false alarm)
+            return None, before, True
+
+    def _focus_text(self) -> str:
+        f = self.uia.focused()
+        if not f:
+            return ""
+        return "focus " + (f'{f.role} "{_clip(f.name, 40)}"' if f.name else f.role)
 
     def act(self, steps: list[dict], observe: str = "diff") -> str:
         self.ensure_ready()
@@ -679,6 +875,7 @@ class Desktop:
         brief = self._orient()
         if brief:
             return brief
+        self._claim()
         prev_hwnd, prev = self.last.get("hwnd"), dict(self.last.get("by_ref", {}))
         if self.strict:
             ok, msg = self.gate.require({"kind": "batch", "summary": "run these steps"}, strict=True,
@@ -688,8 +885,12 @@ class Desktop:
         done = 0
         err = None
         notes: list[str] = []
+        report: list[str] = []
+        effects = moved_any = 0
         self.input.expect = None  # the user may use the mouse between calls; only watch it during this batch
         try:
+            self._settle(self.areas[0], max_wait=0.6)  # baseline, and learns any area that never stops moving
+            before = self._last_thumb
             for st in steps:
                 tries = 0
                 while True:
@@ -698,7 +899,8 @@ class Desktop:
                         self.ui_log(_step_text(st))
                     portable = self._portable(st)
                     try:
-                        self._step(st)
+                        self._typed_secret = False
+                        note = self._step(st)
                         break
                     except UserInterrupted as e:
                         if not e.retry:
@@ -707,30 +909,64 @@ class Desktop:
                         if tries > 3:
                             raise AgentError("the user keeps using the mouse; ask them before continuing")
                         waited = self._yield_to_user()
-                        notes.append(f"note: the user took the mouse during step {done + 1}; waited {waited:.0f}s "
-                                     "until they let go, then redid that step. The screen may have changed.")
+                        busy = "USER BUSY: " if waited >= 5 else ""
+                        notes.append(f"note: {busy}the user took the mouse during step {done + 1}; waited "
+                                     f"{waited:.0f}s until they let go, then redid that step. The screen may have "
+                                     "changed.")
+                img, before, moved = self._after_step(st, before)
+                self._log_step(st, img=img)
+                parts = [note] if note else []
+                if _kind(st) in EFFECT_STEPS:
+                    effects += 1
+                    moved_any += moved
+                    parts.append("screen changed" if moved else "NO visible change")
+                if _kind(st) in FOCUS_STEPS:
+                    parts.append(self._focus_text())
+                report.append(f"{done + 1} {self._safe_step_text(st)}"
+                              + (f" → {'; '.join(p for p in parts if p)}" if any(parts) else ""))
                 done += 1
                 self.actions += 1
                 if self.recording is not None:
                     self.recording.append(portable)
         except UserBusy as e:
-            err = (f"{e}, so this step was not done. They are working on the screen right now: do not fight them. "
-                   "Call act again with the remaining steps when you want to continue (it waits for them to let go).")
-        except (AgentError, ValueError) as e:
+            err = (f"USER BUSY: {e}, so this step was not done. They are working on the screen right now: do not "
+                   "fight them or retry in a loop. Wait, or ask the user; call act again with the remaining steps "
+                   "when you continue (it waits for them to let go).")
+        except (AgentError, ValueError, OSError, RuntimeError) as e:
             err = str(e)
         res = list(notes)
         if err:
+            if done < len(steps):
+                self._log_step(steps[done], ok=False, why=err)
             res.append(f"step {done + 1} failed: {err}" + (f" ({done} steps done)" if done else ""))
             self.ui_log(f"✗ {err[:60]}")
+        elif effects and not moved_any:
+            res.append(f"⚠ ran {done} steps, but the screen did NOT change after any of them: they probably had no "
+                       "effect (focus elsewhere, app still loading, keys not reaching it). Check before continuing.")
         else:
             res.append(f"ok ({done} steps)")
+        res += report
+        self.last_look = time.time()
+        shot = None
         if observe != "none" and not self.pause_reason == "stopped":
-            time.sleep(0.35)
+            img, ms, settled = self._settle(self.areas[0], max_wait=2.0)
+            if not settled:
+                res.append(f"(screen still changing {ms} ms after the last step: loading or animating)")
             try:
-                res.append(self._observe(prev_hwnd, prev, observe))
+                res.append(self._observe(prev_hwnd, prev, "diff" if observe == "screenshot" else observe))
             except AgentError as e:
                 res.append(str(e))
-        return "\n".join(res)
+            if observe == "screenshot":
+                data, scale = encode_jpeg(img, 1280)
+                self.shot = (self.areas[0].left, self.areas[0].top, scale)
+                res.append(f"Screenshot below ({int(img.width * scale)}x{int(img.height * scale)}): click with "
+                           "[x,y] in its pixels.")
+                black = self._black_hint(img, self.areas[0])
+                if black:
+                    res.append(black)
+                shot = data
+        out = "\n".join(res)
+        return (out, shot) if observe == "screenshot" else out
 
     def _portable(self, st: dict) -> dict:
         """Copy of a step with refs replaced by their visible names (refs don't survive sessions)."""
@@ -767,9 +1003,26 @@ class Desktop:
         if not ok:
             raise AgentError(msg)
 
-    def _step(self, st: dict):
+    def _step(self, st: dict) -> str:
+        """Run one step. Returns a short note on what happened (or "")."""
         if not isinstance(st, dict):
             raise AgentError(f"each step must be an object, got {st!r}")
+        if "paste" in st or "paste_file" in st:
+            return self._paste(st)
+        if "navigate" in st:
+            return self._navigate(str(st["navigate"]), st.get("in"), bool(st.get("new_tab", False)))
+        if "wait_stable" in st:
+            return self._wait_stable(st["wait_stable"], float(st.get("timeout", 30)), float(st.get("quiet", 1.0)),
+                                     bool(st.get("after_change", False)))
+        if "wait_ocr" in st:
+            return self._wait_ocr(str(st["wait_ocr"]), float(st.get("timeout", 30)), bool(st.get("gone", False)),
+                                  st.get("in"))
+        if "read" in st:
+            text = self._read_text(self._region_rect(st["read"]))
+            return f'read: "{_clip(text, 300)}"' if text else "read: (no text found)"
+        return self._basic_step(st) or ""
+
+    def _basic_step(self, st: dict):
         button = st.get("button", "left")
         for kind in ("click", "dblclick", "rclick", "hover"):
             if kind in st:
@@ -787,20 +1040,27 @@ class Desktop:
                 return
         if "type" in st:
             text = str(st["type"])
+            rect = None
             if "into" in st:
                 x, y, name, info = self._resolve(st["into"])
                 self._guard_point(x, y)
+                rect = info.get("rect") if info.get("role") != "ocr" else None  # an OCR hit is the label
                 self.input.click(x, y)
                 time.sleep(0.15)
             f = self._settled_focus()
+            self._typed_secret = bool(f and f.password)
             self._require({"kind": "type", "password": bool(f and f.password), "name": f.name if f else ""})
+            delay = _delay(st, 0.012)
             if st.get("clear"):
                 self.input.press("ctrl+a")
                 self.input.press("backspace")
-            self.input.type_text(text)
+            self.input.type_text(text, delay)
+            note = ""
+            if st.get("verify") and not self._typed_secret:
+                note = self._verify_typed(text, rect, delay, bool(st.get("clear")), st.get("into"))
             if st.get("enter"):
                 self.input.press("enter")
-            return
+            return note
         if "key" in st:
             combo = normalize_combo(str(st["key"]))
             f = self.uia.focused()
@@ -867,6 +1127,192 @@ class Desktop:
             prev = key
             time.sleep(0.12)
         return f
+
+    # ---- reading text back (canvas apps have no accessible values: fall back to OCR of the field)
+    def _read_text(self, rect: Rect) -> str:
+        return " | ".join(ln.text for ln in ocr(rect, self._grab_safe(rect)))
+
+    def _field_text(self, rect=None) -> tuple[str | None, str]:
+        """What the focused field shows now: its accessible value, else OCR of the field's box."""
+        f = self.uia.focused()
+        if f and f.role in ("edit", "combo") and f.value not in (None, ""):
+            return str(f.value), "field value"
+        area = self.areas[0]
+        big = lambda r: (r[2] - r[0]) * (r[3] - r[1]) > 0.25 * area.width * area.height  # noqa: E731
+        if (not rect or big(rect)) and f and f.rect and f.rect[2] > f.rect[0] and not big(f.rect):
+            rect = f.rect
+        if not rect or big(rect):
+            # A canvas app: the 'element' is the whole canvas. Read a band around where the field was clicked.
+            from .act import cursor_pos
+
+            x, y = cursor_pos()
+            rect = (x - 200, y - 24, x + 200, y + 24)
+        l, t, r, b = rect
+        l, t, r, b = max(area.left, l - 4), max(area.top, t - 4), min(area.right, r + 4), min(area.bottom, b + 4)
+        if r - l < 4 or b - t < 4:
+            return None, ""
+        return self._read_text(Rect(l, t, r - l, b - t)), "OCR"
+
+    def _verify_typed(self, text: str, rect, delay: float, clear: bool, into) -> str:
+        """Read the field back; if keys were dropped (canvas apps redraw while keys arrive), retype slower."""
+        if "\n" in text or len(text) > 200:
+            return "verify skipped (multi-line or long text)"
+        want = norm_text(text)
+        for attempt in range(3):
+            time.sleep(0.3)
+            got, how = self._field_text(rect)
+            if got is None:
+                return "could not read the field back to verify (take a screenshot to check)"
+            have = norm_text(got)
+            if want in have:
+                return f"verified ({how})" + (f" after {attempt} slower retype(s)" if attempt else "")
+            # Retype only when the field holds nothing but (part of) our text, so nothing of the user's is lost.
+            if attempt == 2 or not (clear or have in want):
+                return f'⚠ VERIFY FAILED: the field shows "{_clip(got, 60)}", not "{_clip(text, 60)}"'
+            if into is not None:
+                x, y, _, _ = self._resolve(into)
+                self.input.click(x, y)
+                time.sleep(0.15)
+            self.input.press("ctrl+a")
+            self.input.press("backspace")
+            delay = max(delay * 3, 0.06)
+            self.input.type_text(text, delay)
+        return ""
+
+    # ---- paste without losing the user's clipboard
+    def _paste(self, st: dict) -> str:
+        if "paste_file" in st:
+            path = str(st["paste_file"])
+            text = clip.read_file(path)
+            src = f" from {os.path.basename(path)}"
+        else:
+            text, src = str(st["paste"]), ""
+        if "into" in st:
+            x, y, _, _ = self._resolve(st["into"])
+            self._guard_point(x, y)
+            self.input.click(x, y)
+            time.sleep(0.15)
+        f = self._settled_focus()
+        self._typed_secret = bool(f and f.password)
+        self._require({"kind": "type", "password": bool(f and f.password), "name": f.name if f else ""})
+        if st.get("clear"):
+            self.input.press("ctrl+a")  # the paste replaces the selection
+        area = self.areas[0]
+        before = thumb(grab(area))
+        saved, lost = clip.save()
+        try:
+            clip.set_text(text, private=True)
+            self.input.press("ctrl+v")
+            # Restore only once the app has taken the text (the screen changes), so it can't paste the old content.
+            end = time.time() + min(3.0, 1.0 + len(text) / 20000)
+            while time.time() < end and not changed(before, thumb(grab(area)), self._moving):
+                time.sleep(0.1)
+            time.sleep(0.25)
+        finally:
+            clip.restore(saved)
+        if st.get("enter"):
+            self.input.press("enter")
+        note = f"pasted {len(text)} chars{src}"
+        f2 = self.uia.focused()
+        if f2 and f2.role in ("edit", "combo") and f2.value not in (None, "") and not f2.password:
+            note += f"; field now holds {len(str(f2.value))} chars"
+        note += "; your clipboard was put back" + (
+            f" (except {lost} item(s) that can't be copied, e.g. files copied in Explorer)" if lost else "")
+        return note
+
+    # ---- browser address bar, without Ctrl+L guesswork or the clipboard
+    def _browser_window(self, where=None) -> winutil.Win:
+        if where is not None:
+            w = self._window_target(where)
+        else:
+            w = next((w for w in winutil.windows() if winutil.on_area(w, self.areas)
+                      and w.exe().lower() in BROWSER_EXES), None)
+            if not w:
+                raise AgentError("no browser window on your screen; use launch(url) to open one")
+        if w.exe().lower() not in BROWSER_EXES:
+            raise AgentError(f'"{w.title[:40]}" is not a browser window')
+        if self._private(w):
+            raise AgentError("that window is private (privacy settings)")
+        return w
+
+    def _bar_focused(self, info) -> bool:
+        f = self.uia.focused()
+        if not f:
+            return False
+        return (bool(info) and tuple(f.rect) == tuple(info[0])) or f.name in UIA.ADDRESS_BAR_NAMES
+
+    def _navigate(self, url: str, where=None, new_tab: bool = False) -> str:
+        url = url.strip()
+        if not url:
+            raise AgentError("navigate needs a URL")
+        w = self._browser_window(where)
+        if winutil.foreground() != w.hwnd or not winutil.on_area(w, self.areas):
+            self._bring_here(w)
+        if new_tab:
+            self.input.press("ctrl+t")
+            time.sleep(0.4)
+        info = self.uia.address_bar_info(w.hwnd)
+        for how in ("ctrl+l", "click", "alt+d", "f6"):
+            if how == "click":
+                if not info:
+                    continue
+                l, t, r, b = info[0]
+                x, y = (l + r) // 2, (t + b) // 2
+                self._guard_point(x, y)
+                self.input.click(x, y)
+            else:
+                self.input.press(how)
+            time.sleep(0.15)
+            if self._bar_focused(info):
+                break
+        else:
+            raise AgentError("could not put the cursor in the browser's address bar; take a screenshot to see why")
+        self.input.press("ctrl+a")
+        self.input.type_text(url, 0.008)
+        self.input.press("delete")  # drop Chrome's inline autocomplete, so Enter opens exactly this URL
+        self.input.press("enter")
+        shown = ""
+        end = time.time() + 8
+        while time.time() < end:
+            time.sleep(0.3)
+            i2 = self.uia.address_bar_info(w.hwnd)
+            shown = i2[1] if i2 else ""
+            if shown and not self._bar_focused(i2):
+                break
+        return f"address bar shows {_clip(shown, 100)}" if shown else "sent the URL (address bar not readable)"
+
+    # ---- waiting for apps that have no readable text
+    def _wait_stable(self, spec, timeout: float, quiet: float, after_change: bool) -> str:
+        rect = self._region_rect(None if spec is True else spec)
+        start = last_change = time.time()
+        prev = thumb(grab(rect))
+        seen = False
+        while True:
+            self._check_paused()
+            time.sleep(0.25)
+            cur = thumb(grab(rect))
+            now = time.time()
+            if changed(prev, cur):
+                last_change, seen, prev = now, True, cur
+            if now - last_change >= quiet and (seen or not after_change):
+                return f"stable after {now - start:.1f}s" + ("" if seen else " (it did not change at all)")
+            if now - start > timeout:
+                why = "it never changed" if after_change and not seen else "it kept changing"
+                raise AgentError(f"wait_stable timed out after {timeout:g}s: {why}")
+
+    def _wait_ocr(self, text: str, timeout: float, gone: bool, where=None) -> str:
+        areas = [self._region_rect(where)] if where is not None else self.areas
+        start = time.time()
+        while True:
+            self._check_paused()
+            found = any(ocr_match(ocr(a, self._grab_safe(a)), text) for a in areas)
+            waited = time.time() - start
+            if found != gone:
+                return f'"{_clip(text, 40)}" {"gone" if gone else "on screen"} after {waited:.1f}s'
+            if waited > timeout:
+                raise AgentError(f'timed out after {timeout:g}s waiting for "{text}" '
+                                 f'{"to disappear" if gone else "to appear"} (OCR)')
+            time.sleep(0.5)
 
     def _wait(self, text: str, timeout: float, gone: bool):
         end = time.time() + timeout
@@ -1003,6 +1449,8 @@ class Desktop:
 
     def launch(self, target: str, observe: bool = True, new_window: bool = False) -> str:
         self.ensure_ready()
+        self._claim()
+        self.timeline.record(f"launch {target[:80]}")
         t = target.strip()
         self.ui_log(f"launch {t[:50]}")
         before = {w.hwnd for w in winutil.windows(include_minimized=True)}
@@ -1114,6 +1562,8 @@ class Desktop:
                 out.append(f'{self.wref(w.hwnd)} {title} {w.exe()} screen{scr}'
                            f'{" minimized" if w.minimized else ""}{mark}')
             return "\n".join(out) or "no windows"
+        self._claim()
+        self.timeline.record(f"window {op} {target or ''}".strip())
         w = self._window_target(target)
         if self._private(w):
             raise AgentError("that window is private (privacy settings)")
@@ -1135,27 +1585,21 @@ class Desktop:
         time.sleep(0.3)
         return f'{op} {self.wref(w.hwnd)} "{w.title[:60]}" done'
 
-    def clipboard(self, op: str = "get", text: str | None = None) -> str:
-        import win32clipboard as cb
-
-        for _ in range(5):
-            try:
-                cb.OpenClipboard()
-                break
-            except Exception:
-                time.sleep(0.1)
+    def clipboard(self, op: str = "get", text: str | None = None, file: str | None = None) -> str:
         try:
             if op == "set":
-                cb.EmptyClipboard()
-                cb.SetClipboardText(text or "", cb.CF_UNICODETEXT)
-                return f"clipboard set ({len(text or '')} chars)"
-            try:
-                data = cb.GetClipboardData(cb.CF_UNICODETEXT)
-            except Exception:
-                return "(clipboard has no text)"
-            return data if len(data) < 6000 else data[:6000] + f"…(+{len(data) - 6000} chars)"
-        finally:
-            cb.CloseClipboard()
+                self._claim()
+                if file:
+                    text = clip.read_file(file)
+                clip.set_text(text or "")
+                return (f"clipboard set ({len(text or '')} chars{' from ' + os.path.basename(file) if file else ''}). "
+                        "This replaced what the user had there; act's paste/paste_file steps avoid that.")
+            data = clip.get_text()
+        except (OSError, ValueError, RuntimeError) as e:
+            raise AgentError(str(e))
+        if data is None:
+            return "(clipboard has no text)"
+        return data if len(data) < 6000 else data[:6000] + f"…(+{len(data) - 6000} chars)"
 
     def switch_screen(self, screen: str) -> str:
         ok, msg = self.gate.require({"kind": "screen", "name": f"screen {screen}"})
@@ -1187,12 +1631,39 @@ def _wait_input_idle(hwnd: int, timeout_ms: int = 3000) -> None:
         pass
 
 
+STEP_KINDS = ("click", "dblclick", "rclick", "hover", "type", "paste", "paste_file", "navigate", "key", "key_down",
+              "key_up", "scroll", "drag", "wait_stable", "wait_ocr", "wait", "sleep", "read", "focus", "launch")
+# Steps that should visibly change something (the batch warns when none of them did), and the ones where
+# keyboard focus matters (the report says where focus ended up).
+EFFECT_STEPS = {"click", "dblclick", "rclick", "type", "paste", "paste_file", "navigate", "key", "scroll", "drag"}
+FOCUS_STEPS = {"click", "dblclick", "type", "paste", "paste_file", "key", "navigate"}
+
+
+def _kind(st) -> str:
+    if not isinstance(st, dict):
+        return ""
+    return next((k for k in STEP_KINDS if k in st), next(iter(st), ""))
+
+
+def _delay(st: dict, default: float) -> float:
+    """Seconds between typed characters: "delay_ms" (0-1000) or the default."""
+    try:
+        return max(0.0, min(float(st["delay_ms"]), 1000.0)) / 1000 if st.get("delay_ms") is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _step_text(st) -> str:
     if not isinstance(st, dict) or not st:
         return str(st)[:60]
-    k = next(iter(st))
-    v = st[k]
+    k = _kind(st)
+    v = st.get(k)
+    into = f" into {json.dumps(st['into'], ensure_ascii=False)[:40]}" if "into" in st else ""
     if k == "type":
         v = (str(v)[:30] + "…") if len(str(v)) > 30 else v
-        return f'type "{v}"' + (f" into {st['into']}" if "into" in st else "")
+        return f'type "{v}"{into}'
+    if k == "paste":
+        return f"paste {len(str(v))} chars{into}"
+    if k == "paste_file":
+        return f"paste file {os.path.basename(str(v))}{into}"
     return f"{k} {json.dumps(v, ensure_ascii=False)[:50]}"

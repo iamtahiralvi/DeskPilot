@@ -110,6 +110,13 @@ def kill(server_pid: int | None, reason: str = "kill switch") -> int:
             pass
     release_input()
     try:
+        from .timeline import append
+
+        append({"pid": os.getpid(), "kind": "kill", "ok": False,
+                "text": f"KILL SWITCH ({reason}): {n} DeskPilot processes ended"})
+    except Exception:
+        pass
+    try:
         from .policy import audit
 
         audit({"event": "kill", "reason": reason, "processes": n})

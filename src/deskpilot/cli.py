@@ -1,4 +1,4 @@
-"""`deskpilot serve | pick | policy | doctor | unlock`."""
+"""`deskpilot serve | pick | policy | doctor | unlock | timeline`."""
 from __future__ import annotations
 
 import sys
@@ -46,8 +46,12 @@ def main() -> None:
         was = killed()
         clear_flag()
         print("kill switch cleared" if was else "kill switch was not set")
+    elif cmd == "timeline":
+        from .timeline import open_html
+
+        print(open_html())
     else:
-        print("usage: deskpilot [serve|pick|policy|doctor|unlock]")
+        print("usage: deskpilot [serve|pick|policy|doctor|unlock|timeline]")
         sys.exit(2)
 
 

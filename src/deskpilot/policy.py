@@ -54,9 +54,15 @@ DEFAULT_POLICY = {
     # screenshots from DeskPilot, so a stuck loop can't burn tokens unseen. Resume from the panel to allow
     # another budget's worth. 0 = no limit.
     "token_budget_per_task": 100000,
-    # At the start of every task (and after you take over or pause), the agent's first act() does not run:
-    # it gets the current screen back and must re-send steps that fit it. Stops it acting on stale assumptions.
+    # If the agent hasn't looked at the screen (snapshot, find, screenshot) or acted in the last look_fresh_seconds,
+    # or you paused / took over since, its next act() does not run: it gets the current screen back and must re-send
+    # steps that fit it. Stops it acting on stale assumptions.
     "look_before_acting": True,
+    "look_fresh_seconds": 60,
+    # Keep a step log with a small picture of the screen after each step (private windows blacked out), viewable
+    # from the panel ("What did it do?") or with `deskpilot timeline`. Deleted after timeline_keep_days.
+    "timeline": True,
+    "timeline_keep_days": 7,
     "ask_click_words_extra": ["rollout", "roll out", "start rollout", "release to production", "unpublish",
                               "send for review", "delete app", "remove app"],
 }

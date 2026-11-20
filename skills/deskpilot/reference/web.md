@@ -24,9 +24,9 @@
 2. If the URL is already right, don't navigate.
 3. `launch("https://site/path")` reuses a tab that already shows that page (it ignores `www.`, a trailing `/`
    and `#anchors`), otherwise opens it.
-4. To change the URL of the current tab, click the address bar, then type:
-   `{"click":"Address and search bar"},{"key":"ctrl+a"},{"type":"github.com/owner/repo","enter":true}`.
-   Ctrl+L can fail when the page holds focus in a text box.
+4. To change the URL of the current tab: `{"navigate":"github.com/owner/repo"}` (`"new_tab": true` for a new
+   tab, `"in": "w3"` for another browser window). It brings the browser to the front and checks the address bar
+   has the cursor before typing, so the URL never lands in the page. Don't use Ctrl+L.
 5. After navigating, `{"wait": "<text on the new page>"}`, then find elements again: old refs are stale.
 
 ## Gmail

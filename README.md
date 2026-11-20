@@ -60,7 +60,9 @@ e40 edit "Search" ="hello"
 
 The agent clicks by reference (`e12`) or by visible text (`"Install"`). After each batch of actions it gets back **only what changed**. Screenshots are a last resort.
 
-**It looks before it acts.** At the start of every task, and after you pause it or take over, the agent's first action is held back until it has looked at the screen: it gets the current screen instead and must send steps that fit what is really there, not what it assumed. (`look_before_acting: false` in the policy turns this off.)
+**It looks before it acts.** If the agent hasn't looked at the screen (or acted) in the last minute, or you paused it or took over since, its next action is held back: it gets the current screen instead and must send steps that fit what is really there, not what it assumed. (`look_before_acting: false` in the policy turns this off; `look_fresh_seconds` sets the minute.)
+
+**It says what each step really did.** After a batch, the agent gets one line per step: whether the screen changed, where keyboard focus went, how many characters were pasted, and whether typed text was verified. A batch where nothing changed is flagged with a warning instead of "ok", so the agent doesn't carry on as if it had worked. Screenshots and results wait until the screen has stopped changing, ignoring a video or animation that never stops.
 
 Snapshots are trimmed without losing anything the agent can use: an element nested inside an identical wrapper is listed once, a row that only repeats part of its parent row is folded into it, empty unnamed rows are skipped, and the browser's bookmarks bar becomes one line (`find()` and clicking by text still reach every bookmark). On a WhatsApp Web window this cut a snapshot from about 1,400 to about 860 tokens.
 
@@ -73,12 +75,17 @@ Snapshots are trimmed without losing anything the agent can use: an element nest
 - **⏹️ Always interruptible.** **Ctrl+Alt+Esc** pauses or resumes at any time. **Ctrl+Alt+Backspace** (or **Kill switch** on the panel) ends DeskPilot at once, even mid-action: the server process is terminated, held keys and mouse buttons are released, and the AI has no desktop tools left. If the AI restarts DeskPilot later, it must ask you first (or run `deskpilot unlock`). If you grab the mouse while the agent works, it steps aside, waits until you let go, then carries on (and tells the AI the screen may have changed).
 - **👻 Gets out of your way.** When a task finishes, the border, tag and panel disappear.
 - **🌐 Precise web control.** In Chrome, Edge or Brave, pages are read through the DevTools protocol (`b12 button "Create app"`), including off-screen elements. Clicks and typing still use the real mouse and keyboard.
+- **🎨 Canvas apps.** Apps drawn on a canvas (Flutter web apps, design tools, games) have no readable elements, so DeskPilot reads them by OCR: click text with `{"click": {"ocr": "Save"}}`, wait with `{"wait_ocr": "Save"}` or `{"wait_stable": "window"}`, check a value with `{"read": …}`, and type with `"verify": true`, which reads the field back and retypes slower when keys were dropped. `act(…, observe="screenshot")` acts and looks in one call.
+- **📋 Your clipboard stays yours.** Typing uses real keystrokes, never the clipboard. Long text and files go in with `{"paste": …}` / `{"paste_file": …}`, which put back whatever you had copied and keep the pasted text out of Win+V history. `{"navigate": url}` opens a URL through the address bar without touching the clipboard either.
 - **🔁 Routines.** Record a task once, add `{{placeholders}}`, and replay it with one call.
 - **🔐 Ask-first permissions.** Deleting, paying, sending, installing, signing out, closing windows, typing into password fields and opening terminals all show an **Allow once / Allow for session / Deny** dialog. An unanswered dialog is denied after 60 s. Everything is logged to `~/.deskpilot/audit.jsonl`.
+- **🚦 One AI at a time.** If you run several AI sessions, only one can use the mouse and keyboard at a time. The first to act holds the computer until its task ends; the others are told "BUSY: another AI session (claude in my-project) is using this computer" instead of fighting over the cursor. Reading the screen never waits. A lock left by a crashed or killed session is taken over automatically.
+- **📼 Step log.** Every step is logged with a small picture of the screen right after it (private windows blacked out). Click **What did it do?** on the panel, or run `deskpilot timeline`, to review it, even after a kill. Kept for 7 days.
 - **🙈 Privacy.**
   - API keys, tokens, card numbers and IBANs are redacted before the model sees them.
   - Password fields show as `***`.
   - Password-manager and security windows are never read, captured or clicked.
+  - Hidden text is stripped before the model sees it: invisible Unicode (including "tag" characters that can spell out a whole hidden sentence), and in precise browser mode, text with a tiny font or the same colour as its background. When hidden instructions are found, the AI is warned that the page is suspicious.
 
 ## Requirements
 
@@ -329,20 +336,36 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 
 ## Tools
 
-10 tools, about 1.6k tokens of definitions:
+10 tools, about 2k tokens of definitions:
 
 | Tool | What it does |
 |---|---|
 | `screen_info` | Screens, the controlled screen, mode. `pick` reopens the picker; `switch` changes the screen (asks you) |
-| `snapshot` | Text list of elements with refs. Scopes: `window`, `page`, `screen`, `taskbar`, `ocr` |
+| `snapshot` | Text list of elements with refs. Scopes: `window`, `page`, `screen`, `taskbar`, `ocr` (clickable OCR refs). `region` reads just one area by OCR |
 | `find` | Find elements by text or role, across the web page, the accessibility tree and OCR |
-| `act` | A batch of steps (click, dblclick, rclick, hover, type, key, scroll, drag, wait, sleep, focus, launch). Returns a diff |
-| `launch` | Open an app, URL, URI, file or folder, or `agent browser <url>` |
+| `act` | A batch of steps (see below). Returns one line per step and what changed; `observe="screenshot"` also returns an image |
+| `launch` | Open an app, URL, URI, file or folder, or `agent browser <url>`. Switches to it if it's already open |
 | `window` | list, focus, minimize, maximize, restore, close, move_here |
-| `clipboard` | Get or set clipboard text |
+| `clipboard` | Get or set clipboard text, or set it from a text file |
 | `routine` | list, run, start, save, show or delete saved routines |
-| `screenshot` | See the screen when text isn't enough: whole screen, one window (`ref="window"`/`"w3"`), an element or a region; click what you see by `[x, y]` |
-| `done` | Task finished: hides the border, tag and panel |
+| `screenshot` | See the screen when text isn't enough: whole screen, one window (`ref="window"`/`"w3"`), an element or a region; click what you see by `[x, y]`. Waits until the screen stops changing, and warns when the image is black (wrong or locked screen) |
+| `done` | Task finished: hides the border, tag and panel, and returns the steps taken plus a link to the step log |
+
+### act steps
+
+| Step | Example |
+|---|---|
+| Click, double-click, right-click, hover | `{"click": "e12"}`, `{"dblclick": "Report.pdf"}`, `{"click": {"ocr": "Save"}}`, `{"click": [640, 360]}` |
+| Type (real keystrokes) | `{"type": "hello", "into": "Message", "clear": true, "enter": true}`; `"verify": true` reads it back and retypes; `"delay_ms": 60` types slower |
+| Paste text or a file | `{"paste": "…", "into": "e5", "clear": true}`, `{"paste_file": "C:\\work\\notes.txt"}` (your clipboard is put back) |
+| Go to a URL | `{"navigate": "https://example.com"}`, `"new_tab": true` |
+| Keys | `{"key": "ctrl+s"}`, `{"key": "tab", "repeat": 3}`, `{"key_down": "shift"}`, `{"key_up": "shift"}` |
+| Scroll, drag | `{"scroll": "down", "amount": 5, "at": "e3"}`, `{"drag": "e4", "to": "e9"}` |
+| Wait | `{"wait": "Inbox"}`, `{"wait_ocr": "Save"}`, `{"wait_stable": "window"}`, `{"sleep": 1}` |
+| Read a value | `{"read": [400, 220, 300, 40]}` (OCR text of that area) |
+| Windows and apps | `{"focus": "w3"}`, `{"launch": "Calculator"}` |
+
+Targets are a ref (`e12`, `b12`), visible text, text found by OCR (`{"ocr": "Save"}`), or `[x, y]` pixels of the latest screenshot.
 
 ## Configuration
 
@@ -359,7 +382,9 @@ Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Ed
 | `private_windows` | Windows that are never read, captured or clicked |
 | `redact_secrets` | Redact keys, tokens and card numbers from what the model sees |
 | `use_my_browser` | Default `false`: your everyday browser is read through the screen, with no prompt. `true` = also use DevTools on it (you approve Chrome's prompt) |
-| `look_before_acting` | Hold back the first action of each task until the agent has looked at the screen (default `true`) |
+| `timeline`, `timeline_keep_days` | Keep the step log with screen pictures (default `true`, 7 days) |
+| `look_before_acting` | Hold back an action when the agent hasn't looked at the screen recently (default `true`) |
+| `look_fresh_seconds` | How recent "recently" is: a look or action within this many seconds counts (default `60`) |
 | `token_budget_per_task` | Pause the agent once one task (until it calls `done()`) has received this many tokens from DeskPilot, so a stuck loop can't burn tokens unseen. **Resume** on the panel allows another budget's worth (default 100000, `0` = no limit) |
 | `hide_overlay_after_idle_seconds` | Hide the overlay when the agent goes quiet (default 30, `0` = never) |
 | `wait_for_user_mouse_seconds`, `user_mouse_idle_seconds` | When you grab the mouse, the agent waits for it to be still this long (default 1.5 s), for up to 60 s per call |
@@ -368,14 +393,17 @@ Other files in `~/.deskpilot/`:
 - `session.json`: the chosen screen and mode
 - `routines/*.json`: saved routines
 - `audit.jsonl`: the action log
+- `timeline/`: the step log and its pictures (`deskpilot timeline` opens it)
 
 ## CLI
 
 ```
-deskpilot serve    run the MCP server over stdio (your AI client runs this)
-deskpilot pick     choose the screen and permission mode
-deskpilot policy   create or print the path of the rules file
-deskpilot doctor   list screens and check that OCR works
+deskpilot serve      run the MCP server over stdio (your AI client runs this)
+deskpilot pick       choose the screen and permission mode
+deskpilot policy     create or print the path of the rules file
+deskpilot doctor     list screens and check that OCR works
+deskpilot timeline   open the step log: what the agent did, with a picture after each step
+deskpilot unlock     allow DeskPilot again after you used the kill switch
 ```
 
 ## Safety
@@ -384,7 +412,8 @@ DeskPilot controls your **real** mouse and keyboard. Before you let an agent run
 
 - Give it a screen with nothing sensitive open, or use **Strict** mode.
 - Keep the ask-first rules on, and add your own words to `ask_click_words_extra`.
-- Remember that **Ctrl+Alt+Esc** always pauses it.
+- Remember that **Ctrl+Alt+Esc** always pauses it, and **Ctrl+Alt+Backspace** ends it at once.
+- Review what it did afterwards with `deskpilot timeline` or **What did it do?** on the panel.
 
 AI agents make mistakes. You are responsible for what you let them do on your computer.
 

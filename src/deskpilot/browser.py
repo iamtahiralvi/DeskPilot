@@ -281,7 +281,17 @@ function(start, full, filt, limit) {
   const visible = (el, r) => {
     if (r.width < 2 || r.height < 2) return false;
     const cs = getComputedStyle(el);
-    return cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.05;
+    if (cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity <= 0.05) return false;
+    // text a person can't read: tiny font, transparent colour, or the same colour as what is behind it
+    if (parseFloat(cs.fontSize) < 4 || /rgba\(.*,\s*0\)$/.test(cs.color)) return false;
+    let b = el, bg = '';
+    while (b && b.nodeType === 1) {
+      const c = getComputedStyle(b).backgroundColor;
+      if (c && !/rgba\(.*,\s*0\)$/.test(c) && c !== 'transparent') { bg = c; break; }
+      b = b.parentElement;
+    }
+    if (bg && bg === cs.color && !el.querySelector('img,svg,canvas,video')) return false;
+    return true;
   };
   const seen = new Set();
   const covered = [];   // rects of emitted interactive elements (to skip their inner texts)

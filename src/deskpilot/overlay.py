@@ -181,6 +181,9 @@ class Panel:
         self.kill_btn = T.button(ctk, self.more, "Kill switch  ·  end DeskPilot now", self.on_kill, kind="danger",
                                  width=290, height=30)
         self.kill_btn.pack(fill="x", padx=16, pady=(8, 0))
+        self.tl_btn = T.button(ctk, self.more, "What did it do?  ·  step log", self.on_timeline, kind="ghost",
+                               width=290, height=28)
+        self.tl_btn.pack(fill="x", padx=16, pady=(4, 0))
 
         T.divider(ctk, self.more, pady=(12, 8), padx=16)
         self.strict = ctk.BooleanVar(value=False)
@@ -232,6 +235,11 @@ class Panel:
 
     def on_stop(self):
         emit("RESUME" if self.app.paused == "stopped" else "STOP")
+
+    def on_timeline(self):
+        from . import timeline
+
+        threading.Thread(target=timeline.open_html, daemon=True).start()
 
     def on_kill(self):
         kill_now("panel button")

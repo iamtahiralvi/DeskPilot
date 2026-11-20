@@ -284,17 +284,25 @@ class UIA:
         el = self.uia.ElementFromHandle(hwnd)
         return self._convert(el.BuildUpdatedCache(self.cr))
 
-    def address_bar(self, hwnd: int) -> str | None:
-        """The URL in a Chromium browser window's address bar (its active tab), via accessibility. No CDP needed."""
+    ADDRESS_BAR_NAMES = ("Address and search bar", "Search or enter web address", "Search with Google or enter address")
+
+    def address_bar_info(self, hwnd: int) -> tuple[tuple[int, int, int, int], str] | None:
+        """(rect, url) of a browser window's address bar, via accessibility. No CDP needed."""
         try:
             el = self.uia.ElementFromHandle(hwnd)
-            bar = el.FindFirst(4, self.uia.CreatePropertyCondition(P_NAME, "Address and search bar"))  # descendants
-            if not bar:
-                return None
-            v = bar.GetCurrentPropertyValue(P_VALUE)
-            return str(v) if v else None
+            for name in self.ADDRESS_BAR_NAMES:
+                bar = el.FindFirst(4, self.uia.CreatePropertyCondition(P_NAME, name))  # descendants
+                if bar:
+                    v = bar.GetCurrentPropertyValue(P_VALUE)
+                    return self._rect(bar), (str(v) if v else "")
         except Exception:
-            return None
+            pass
+        return None
+
+    def address_bar(self, hwnd: int) -> str | None:
+        """The URL in a Chromium browser window's address bar (its active tab), via accessibility. No CDP needed."""
+        info = self.address_bar_info(hwnd)
+        return (info[1] or None) if info else None
 
     def focused(self) -> Node | None:
         try:
@@ -462,12 +470,12 @@ def ocr(area: Rect, img=None) -> list[OcrLine]:
 
 def ocr_match(lines: list[OcrLine], text: str) -> list[tuple[str, tuple[int, int, int, int]]]:
     """Find text (one or more words) in OCR output; returns (matched text, rect) using word-level boxes."""
-    q = text.lower().split()
+    q = [norm_text(w) for w in text.split()]  # tolerant of OCR's l/I/1 and O/0 mix-ups
     hits = []
     if not q:
         return hits
     for ln in lines:
-        ws = [w[0].lower() for w in ln.words]
+        ws = [norm_text(w[0]) for w in ln.words]
         for i in range(len(ws) - len(q) + 1):
             if all(q[j] in ws[i + j] for j in range(len(q))):
                 boxes = [ln.words[i + j][1] for j in range(len(q))]
@@ -475,6 +483,69 @@ def ocr_match(lines: list[OcrLine], text: str) -> list[tuple[str, tuple[int, int
                         max(b[3] for b in boxes))
                 hits.append((" ".join(ln.words[i + j][0] for j in range(len(q))), rect))
     return hits
+
+
+def thumb(img):
+    """Small grayscale copy for cheap 'did the screen change?' checks (1/4 size, at most 480 px wide)."""
+    from PIL import Image
+
+    w, h = img.size
+    f = max(4, -(-w // 480))  # ceil(w / 480), at least 4
+    return img.convert("L").resize((max(1, w // f), max(1, h // f)), Image.BOX)
+
+
+def diff_box(a, b, mask=None, level: int = 24):
+    """Bounding box (thumb pixels) of what changed between two thumbs, or None when nothing did. A change confined
+    to a thin vertical line (a blinking caret, 1-2 thumb pixels wide) only counts when it is long; anything wider
+    counts from 3 pixels. mask = a box to ignore (a video or spinner that never stops moving)."""
+    from PIL import ImageChops
+
+    if a is None or b is None or a.size != b.size:
+        return (0, 0, b.size[0], b.size[1]) if b is not None else (0, 0, 1, 1)
+    d = ImageChops.difference(a, b).point(lambda v: 255 if v > level else 0)
+    if mask:
+        d.paste(0, tuple(mask))
+    box = d.getbbox()
+    if not box:
+        return None
+    n = d.histogram()[255]
+    if (n >= 40) if box[2] - box[0] <= 2 else (n >= 3):
+        return box
+    return None
+
+
+def changed(a, b, mask=None) -> bool:
+    return diff_box(a, b, mask) is not None
+
+
+def moving_box(old_box, new_box, size) -> tuple | None:
+    """When the same part of the screen changed twice in a row (a playing video, an animation), the box to
+    ignore from now on; None when the changes are in different places (a page still loading)."""
+    if not old_box or not new_box:
+        return None
+    l, t = max(old_box[0], new_box[0]), max(old_box[1], new_box[1])
+    r, b = min(old_box[2], new_box[2]), min(old_box[3], new_box[3])
+    inter = max(0, r - l) * max(0, b - t)
+    union = ((old_box[2] - old_box[0]) * (old_box[3] - old_box[1])
+             + (new_box[2] - new_box[0]) * (new_box[3] - new_box[1]) - inter)
+    big = (old_box[2] - old_box[0]) * (old_box[3] - old_box[1]) > 0.5 * size[0] * size[1]
+    if union and inter / union > 0.6 and not big:
+        return (min(old_box[0], new_box[0]) - 1, min(old_box[1], new_box[1]) - 1,
+                max(old_box[2], new_box[2]) + 1, max(old_box[3], new_box[3]) + 1)
+    return None
+
+
+def is_black(img) -> bool:
+    """An (almost) all-black capture: a screen that's off/locked, a protected window, or the wrong screen."""
+    from PIL import ImageStat
+
+    st = ImageStat.Stat(img.convert("L").resize((96, 54)))
+    return st.mean[0] < 6 and st.stddev[0] < 6
+
+
+def norm_text(s: str) -> str:
+    """Loose comparison for OCR read-back: no spaces/case, and the usual OCR confusions folded together."""
+    return "".join(str(s).lower().split()).translate(str.maketrans("oil|", "0111"))
 
 
 def encode_jpeg(img, max_side: int = 1280, quality: int = 60) -> tuple[bytes, float]:
