@@ -50,6 +50,13 @@ DEFAULT_POLICY = {
     # (and no button held) for user_mouse_idle_seconds. It gives up the current call after this many seconds.
     "wait_for_user_mouse_seconds": 60,
     "user_mouse_idle_seconds": 1.5,
+    # Pause the agent once one task (until it calls done()) has received this many tokens of screen text and
+    # screenshots from DeskPilot, so a stuck loop can't burn tokens unseen. Resume from the panel to allow
+    # another budget's worth. 0 = no limit.
+    "token_budget_per_task": 100000,
+    # At the start of every task (and after you take over or pause), the agent's first act() does not run:
+    # it gets the current screen back and must re-send steps that fit it. Stops it acting on stale assumptions.
+    "look_before_acting": True,
     "ask_click_words_extra": ["rollout", "roll out", "start rollout", "release to production", "unpublish",
                               "send for review", "delete app", "remove app"],
 }

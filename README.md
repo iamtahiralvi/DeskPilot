@@ -60,13 +60,17 @@ e40 edit "Search" ="hello"
 
 The agent clicks by reference (`e12`) or by visible text (`"Install"`). After each batch of actions it gets back **only what changed**. Screenshots are a last resort.
 
+**It looks before it acts.** At the start of every task, and after you pause it or take over, the agent's first action is held back until it has looked at the screen: it gets the current screen instead and must send steps that fit what is really there, not what it assumed. (`look_before_acting: false` in the policy turns this off.)
+
+Snapshots are trimmed without losing anything the agent can use: an element nested inside an identical wrapper is listed once, a row that only repeats part of its parent row is folded into it, empty unnamed rows are skipped, and the browser's bookmarks bar becomes one line (`find()` and clicking by text still reach every bookmark). On a WhatsApp Web window this cut a snapshot from about 1,400 to about 860 tokens.
+
 ## Features
 
 - **🖥️ Pick a display.** With more than one monitor, you choose which one the agent may see and control. It can't touch the others. You can also allow all screens.
 - **🖱️ One cursor.** The agent drives your real mouse pointer, so there is no second, fake cursor. A small "Claude" tag follows the pointer while the agent acts.
 - **🔲 Clear on-screen status.** A thin black-and-white border marks the controlled screen (dashed when paused), with a status chip and click ripples.
-- **🎛️ Control panel.** A floating panel shows the current step, recent activity and token use, with **Pause / Take over / Stop** buttons. When you have a second monitor, it sits there so it never covers the agent's work.
-- **⏹️ Always interruptible.** **Ctrl+Alt+Esc** pauses or resumes at any time. If you grab the mouse while the agent works, it steps aside, waits until you let go, then carries on (and tells the AI the screen may have changed).
+- **🎛️ Control panel.** A floating panel shows the current step, recent activity and token use, with **Pause / Take over / Stop** buttons and a **Kill switch**. When you have a second monitor, it sits there so it never covers the agent's work.
+- **⏹️ Always interruptible.** **Ctrl+Alt+Esc** pauses or resumes at any time. **Ctrl+Alt+Backspace** (or **Kill switch** on the panel) ends DeskPilot at once, even mid-action: the server process is terminated, held keys and mouse buttons are released, and the AI has no desktop tools left. If the AI restarts DeskPilot later, it must ask you first (or run `deskpilot unlock`). If you grab the mouse while the agent works, it steps aside, waits until you let go, then carries on (and tells the AI the screen may have changed).
 - **👻 Gets out of your way.** When a task finishes, the border, tag and panel disappear.
 - **🌐 Precise web control.** In Chrome, Edge or Brave, pages are read through the DevTools protocol (`b12 button "Create app"`), including off-screen elements. Clicks and typing still use the real mouse and keyboard.
 - **🔁 Routines.** Record a task once, add `{{placeholders}}`, and replay it with one call.
@@ -308,6 +312,7 @@ While it works:
 | Pause / resume | **Ctrl+Alt+Esc**, or **Pause** on the panel |
 | Do something yourself | **Take over**, then **Give back** |
 | End the task | **Stop** (click **Unlock** later to allow it again) |
+| Something is going wrong | **Ctrl+Alt+Backspace** or **Kill switch**: DeskPilot is terminated at once |
 | Approve a risky step | **Allow once** / **Allow for session** in the dialog |
 
 ## Browsers
@@ -354,6 +359,8 @@ Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Ed
 | `private_windows` | Windows that are never read, captured or clicked |
 | `redact_secrets` | Redact keys, tokens and card numbers from what the model sees |
 | `use_my_browser` | Default `false`: your everyday browser is read through the screen, with no prompt. `true` = also use DevTools on it (you approve Chrome's prompt) |
+| `look_before_acting` | Hold back the first action of each task until the agent has looked at the screen (default `true`) |
+| `token_budget_per_task` | Pause the agent once one task (until it calls `done()`) has received this many tokens from DeskPilot, so a stuck loop can't burn tokens unseen. **Resume** on the panel allows another budget's worth (default 100000, `0` = no limit) |
 | `hide_overlay_after_idle_seconds` | Hide the overlay when the agent goes quiet (default 30, `0` = never) |
 | `wait_for_user_mouse_seconds`, `user_mouse_idle_seconds` | When you grab the mouse, the agent waits for it to be still this long (default 1.5 s), for up to 60 s per call |
 

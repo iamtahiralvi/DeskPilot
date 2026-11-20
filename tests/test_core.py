@@ -190,3 +190,70 @@ def test_ask_click_skips_passive_and_content_cards():
                    ).level == "allow"
     long_link = "u/someone replied to your post in r/MusicTeachers My students have a homework journal 49m ago"
     assert p.check({"kind": "click", "name": long_link, "role": "link"}).level == "allow"
+
+
+def test_kill_flag_roundtrip(tmp_path, monkeypatch):
+    from deskpilot import killswitch
+
+    monkeypatch.setattr(killswitch, "HOME", tmp_path)
+    monkeypatch.setattr(killswitch, "KILL_FLAG", tmp_path / "killed")
+    assert not killswitch.killed()
+    killswitch.write_flag("test")
+    assert killswitch.killed()
+    killswitch.clear_flag()
+    killswitch.clear_flag()  # idempotent
+    assert not killswitch.killed()
+
+
+def test_kill_never_targets_itself():
+    import os
+
+    from deskpilot.killswitch import victims
+
+    assert all(p.pid != os.getpid() for p in victims(os.getpid(), os.getpid()))
+    assert all(p.pid != os.getpid() for p in victims(999999999, os.getpid()))
+
+
+def test_kill_recognises_only_deskpilot_processes():
+    from deskpilot.killswitch import is_deskpilot
+
+    exe = r"C:\Users\u\.local\bin\deskpilot.exe"
+    assert is_deskpilot("deskpilot.exe", [exe, "serve"])
+    assert is_deskpilot("deskpilot.exe", [exe])
+    assert is_deskpilot("python.exe", [r"C:\t\python.exe", exe, "serve"])
+    assert is_deskpilot("python.exe", ["python.exe", "-m", "deskpilot.overlay"])
+    assert is_deskpilot("python.exe", ["python.exe", "-m", "deskpilot.confirm", "click", "x", "60"])
+    assert is_deskpilot("python.exe", ["python.exe", "-m", "deskpilot"])
+    assert not is_deskpilot("bash.exe", ["bash", "-c", "deskpilot.exe serve"])
+    assert not is_deskpilot("python.exe", ["python.exe", "-c", "print('hi')"])
+    assert not is_deskpilot("deskpilot.exe", [exe, "unlock"])
+    assert not is_deskpilot("deskpilot.exe", [exe, "server2"])
+    assert not is_deskpilot("python.exe", ["python.exe", "-m", "pytest", "tests/test_core.py"])
+
+
+def test_format_trims_without_losing_information():
+    R = (10, 10, 300, 40)
+    root = Node("window", "Chat", rect=(0, 0, 1920, 1080), children=[
+        # Chrome nests an identical wrapper: say it once
+        Node("row", "Ann 9:41 see you", rect=R, children=[
+            Node("row", "Ann 9:41 see you", rect=R, children=[
+                Node("row", "Ann 9:41", rect=(10, 10, 200, 25)),          # echo of the parent: folded
+                Node("button", "Reply", rect=(250, 10, 290, 40)),          # new information: kept
+            ]),
+        ]),
+        Node("row", "", rect=(10, 50, 300, 80)),                            # unnamed, stateless: skipped
+        Node("row", "", rect=(10, 90, 300, 120), selected=True),            # unnamed but selected: kept
+        Node("toolbar", "Bookmarks", rect=(0, 130, 1920, 160), children=[
+            Node("button", f"Site {i}", rect=(10 + 60 * i, 130, 60 + 60 * i, 160)) for i in range(12)]),
+    ])
+    lines, by_ref, _ = format_tree(root, AREA, RefTable())
+    text = "\n".join(lines)
+    assert text.count('row "Ann 9:41 see you"') == 1
+    assert 'row "Ann 9:41"' not in text
+    assert 'button "Reply"' in text
+    assert sum(1 for line in lines if line.strip().split(" ", 1)[1] == "row selected") == 1
+    assert "Site 3" not in text and "12 items folded" in text
+    # a filter still reaches folded bookmarks, and find() always does
+    flines, _, _ = format_tree(root, AREA, RefTable(), filt="Site 3")
+    assert any("Site 3" in line for line in flines)
+    assert find_nodes(root, "Site 3", None, AREA)

@@ -21,6 +21,11 @@ INTERACTIVE = {"button", "checkbox", "combo", "edit", "link", "item", "menuitem"
                "tab", "treeitem", "row", "split", "headeritem", "doc"}
 SKIP_SUBTREE = {"scrollbar", "thumb", "separator", "titlebar", "tooltip", "progress"}
 EDITABLE = {"edit", "doc", "combo"}
+# Containers that say nothing without a name: their (named) children are listed instead.
+QUIET_UNNAMED = {"row", "item", "treeitem"}
+# Browser bookmark bars repeat in every snapshot and are rarely needed: one line instead of one per bookmark.
+# find("name") and clicking by text still reach every bookmark.
+FOLDED_BARS = {"bookmarks", "bookmarks bar", "favorites bar", "favourites bar"}
 
 
 @dataclass
@@ -126,7 +131,10 @@ def describe(node: Node, name_len: int = 80) -> str:
 
 def format_tree(root: Node, areas: list[Rect], refs: RefTable, max_nodes: int = 250,
                 filt: str | None = None) -> tuple[list[str], dict[str, str], int]:
-    """Return (lines, ref->line, hidden_count). Unnamed wrappers are flattened; offscreen and tiny nodes dropped."""
+    """Return (lines, ref->line, hidden_count). Unnamed wrappers are flattened; offscreen and tiny nodes dropped.
+    Lossless trimming: an element printed once is not printed again (browsers nest identical wrappers), a child
+    that only repeats part of its same-role parent's name is folded into the parent, and unnamed rows/items
+    that carry no state are skipped (their children are listed)."""
     lines: list[str] = []
     by_ref: dict[str, str] = {}
     hidden = 0
@@ -136,7 +144,7 @@ def format_tree(root: Node, areas: list[Rect], refs: RefTable, max_nodes: int = 
         l, t, r, b = n.rect
         return n.visible and any(a.intersects(l, t, r, b) for a in areas)
 
-    def emit(n: Node, depth: int, parent_name: str) -> int:
+    def emit(n: Node, depth: int, parent_name: str, parent_role: str = "") -> int:
         nonlocal hidden
         if n.role in SKIP_SUBTREE:
             return depth
@@ -148,6 +156,11 @@ def format_tree(root: Node, areas: list[Rect], refs: RefTable, max_nodes: int = 
                 show = True
         if show and n.role == "text" and parent_name and n.name in parent_name:
             show = False
+        if show and n.role == parent_role and n.name and n.name in parent_name and not (n.focused or n.selected):
+            show = False  # e.g. row "Ann 9:41 see you" > row "Ann 9:41": the parent already says it
+        if (show and n.role in QUIET_UNNAMED and not n.name and n.value in (None, "")
+                and not (n.focused or n.selected)):
+            show = False
         if show and f and f not in (n.name or "").lower() and f not in str(n.value or "").lower():
             show = False
         if show:
@@ -155,13 +168,21 @@ def format_tree(root: Node, areas: list[Rect], refs: RefTable, max_nodes: int = 
                 hidden += 1
             else:
                 ref = refs.assign(n.role, n.name, n.aid, n.rect, n.role in EDITABLE, n.password)
-                line = f"{' ' * min(depth, 8)}{ref} {describe(n)}"
-                lines.append(line)
-                by_ref[ref] = line.strip()
+                if ref in by_ref:  # same element again (identical nested wrapper): say it once
+                    show = False
+                else:
+                    line = f"{' ' * min(depth, 8)}{ref} {describe(n)}"
+                    if not f and n.role == "toolbar" and n.name.lower() in FOLDED_BARS:
+                        k = sum(1 for c in n.children if c.name and on_screen(c))
+                        lines.append(f'{line} ({k} items folded; find("name") or click by text reaches them)')
+                        by_ref[ref] = lines[-1].strip()
+                        return depth
+                    lines.append(line)
+                    by_ref[ref] = line.strip()
         child_depth = depth + 1 if show and not f else depth
-        pname = n.name if show else parent_name
+        pname, prole = (n.name, n.role) if show else (parent_name, parent_role)
         for c in n.children:
-            emit(c, child_depth, pname)
+            emit(c, child_depth, pname, prole)
         return depth
 
     # The window itself is already named in the snapshot header; start with its children.

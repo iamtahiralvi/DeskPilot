@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import win32gui
 
+from . import killswitch
 from . import routines as R
 from . import winutil
 from .act import Input, UserBusy, UserInterrupted
@@ -43,8 +44,10 @@ class OverlayClient:
     def start(self, areas: list[Rect], mode: str):
         if self.proc is None or self.proc.poll() is not None:
             try:
+                env = {**os.environ, killswitch.SERVER_PID_ENV: str(os.getpid())}  # the kill switch's target
                 self.proc = subprocess.Popen([sys.executable, "-m", "deskpilot.overlay"], stdin=subprocess.PIPE,
-                                             stdout=subprocess.PIPE, text=True, bufsize=1, creationflags=NO_WINDOW)
+                                             stdout=subprocess.PIPE, text=True, bufsize=1, creationflags=NO_WINDOW,
+                                             env=env)
                 winutil.OWN_PIDS.add(self.proc.pid)
                 threading.Thread(target=self._read, daemon=True).start()
             except Exception:
@@ -81,6 +84,8 @@ PAUSE_MSG = {
     "takeover": "PAUSED: the user took over the computer. Stop and wait until they hand control back.",
     "stopped": "STOPPED by the user. End this task now and tell the user what you completed.",
     "moved": "PAUSED: the user moved the mouse. Stop; they resume from the panel or with Ctrl+Alt+Esc.",
+    "budget": "PAUSED: this task reached the token budget the user set. Stop, tell the user what you have done "
+              "so far and that they can resume from the DeskPilot panel if they want you to continue.",
 }
 
 
@@ -101,8 +106,11 @@ class Desktop:
         self.last: dict = {"hwnd": None, "by_ref": {}}
         self.shot = None  # (left, top, scale) of the last screenshot
         self.pause_reason = ""
+        # False at the start of every task: the first act() then shows the screen instead of acting blind.
+        self.oriented = False
         self.recording: list | None = None
         self.tokens = 0
+        self.task_tokens = 0
         self.actions = 0
         self.overlay = OverlayClient(self._on_overlay)
         self.input = Input(on_move=lambda x, y: self.overlay.send({"op": "move", "x": x, "y": y}),
@@ -118,6 +126,11 @@ class Desktop:
             self.user_idle = float(self.gate.policy.rules.get("user_mouse_idle_seconds", 1.5) or 1.5)
         except (TypeError, ValueError):
             self.user_wait, self.user_idle = 60.0, 1.5
+        self.look_first = bool(self.gate.policy.rules.get("look_before_acting", True))
+        try:
+            self.budget = int(self.gate.policy.rules.get("token_budget_per_task", 100000) or 0)
+        except (TypeError, ValueError):
+            self.budget = 100000
 
     # ------------------------------------------------------------ overlay lifetime
     def busy(self):
@@ -137,9 +150,12 @@ class Desktop:
     def finish(self, summary: str = "", reason: str = "done") -> str:
         """Task over: drop the overlay. A user Pause/Stop stays in effect (the next call shows it again);
         an automatic 'you moved the mouse' pause is cleared so the next task starts clean."""
-        if self.pause_reason == "moved":
+        if self.pause_reason in ("moved", "budget"):
             self.pause_reason = ""
             self.overlay.send({"op": "paused", "v": ""})
+        self.task_tokens = 0
+        self.oriented = False  # next task: look before acting
+        self._send_stats()
         if summary:
             self.ui_log("✓ " + summary)
         self.ui_state("idle")
@@ -154,7 +170,13 @@ class Desktop:
         self.uia = UIA()
 
     def call(self, fn, *a, **kw):
-        return self.pool.submit(fn, *a, **kw)
+        if fn == self.finish:
+            return self.pool.submit(fn, *a, **kw)
+
+        def guarded():
+            self._check_killed()  # every tool, not only the ones that go through ensure_ready
+            return fn(*a, **kw)
+        return self.pool.submit(guarded)
 
     @property
     def paused(self) -> bool:
@@ -171,6 +193,11 @@ class Desktop:
         elif cmd in ("PAUSE", "TAKEOVER", "STOP"):
             self._set_pause({"PAUSE": "paused", "TAKEOVER": "takeover", "STOP": "stopped"}[cmd])
         elif cmd in ("RESUME", "GIVEBACK"):
+            if self.pause_reason in ("paused", "takeover", "moved", "stopped"):
+                self.oriented = False  # the user may have changed the screen meanwhile
+            if self.pause_reason == "budget":
+                self.task_tokens = 0  # the user allowed another budget's worth
+                self._send_stats()
             self._set_pause("")
         elif cmd.startswith("MODE "):
             self.session.mode = cmd.split()[1]
@@ -210,11 +237,32 @@ class Desktop:
 
     def add_tokens(self, n: int):
         self.tokens += n
-        self.overlay.send({"op": "stats", "tokens": self.tokens, "actions": self.actions})
+        self.task_tokens += n
+        self._send_stats()
+        if self.budget and self.task_tokens >= self.budget and not self.paused:
+            self._set_pause("budget")
+            self.ui_log(f"⏸ token budget reached (~{self.task_tokens // 1000}k)")
+
+    def _send_stats(self):
+        self.overlay.send({"op": "stats", "tokens": self.tokens, "actions": self.actions,
+                           "task": self.task_tokens, "budget": self.budget})
 
     def _check_paused(self):
         if self.paused:
             raise AgentError(PAUSE_MSG[self.pause_reason])
+
+    def _check_killed(self):
+        """After the kill switch, nothing happens on the desktop until the user says so in person."""
+        if not killswitch.killed():
+            return
+        answer = self._dialog("control your computer again",
+                              "You used the DeskPilot kill switch. The AI is asking to use your screen again.\n"
+                              "Deny keeps DeskPilot switched off.")
+        if answer == "deny":
+            raise AgentError("KILLED: the user hit the DeskPilot kill switch and has not allowed control again. "
+                             "Do not use DeskPilot tools; tell the user and wait for their instructions.")
+        killswitch.clear_flag()
+        audit({"event": "unkill", "answer": answer})
 
     def ensure_ready(self):
         if not self.session.picked:
@@ -382,6 +430,7 @@ class Desktop:
         if scope not in ("screen",) and len(wins) > 1:
             out.append("other windows: " + ", ".join(f'{self.wref(w.hwnd)} "{w.title[:40]}"' for w in wins[1:8]))
         self.last = {"hwnd": wins[0].hwnd, "by_ref": by_ref_all, "scope": scope, "filter": filter}
+        self.oriented = True
         return "\n".join(out)
 
     def _taskbars(self) -> list[int]:
@@ -495,6 +544,8 @@ class Desktop:
             draw_marks(img, area, [i for i in infos if i])
         data, scale = encode_jpeg(img, max_side)
         self.shot = (area.left, area.top, scale)
+        if not ref and not region:
+            self.oriented = True  # saw the whole screen
         note = (f"{int(img.width * scale)}x{int(img.height * scale)} image of the screen as it is now. Click what you see "
                 f"with [x,y] in these image pixels, e.g. act([{{\"click\": [x, y]}}]); region=[x,y,w,h] zooms in.")
         return data, note
@@ -608,10 +659,26 @@ class Desktop:
                 raise AgentError("that point is inside a private window (privacy settings); ask the user")
 
     # ------------------------------------------------------------ actions
+    def _orient(self) -> str | None:
+        """First action of a task without having looked: show the screen instead of acting on assumptions
+        (another window may be on top, the page may differ, old refs may point at the wrong thing)."""
+        if self.oriented or not self.look_first:
+            return None
+        self.ui_log("👀 looking at the screen before acting")
+        snap = self.snapshot()
+        audit({"event": "orient"})
+        return ("NOT DONE YET: this is the first action of the task, so here is the screen as it is right now. "
+                "Read it: which window is on top, what page or state it is in, what is focused. Then send act "
+                "again with steps that fit THIS screen (use the refs below; refs from before may be stale). "
+                "If what you need is not here, use launch() or window().\n" + snap)
+
     def act(self, steps: list[dict], observe: str = "diff") -> str:
         self.ensure_ready()
         if not isinstance(steps, list) or not steps:
             raise AgentError("steps must be a non-empty list")
+        brief = self._orient()
+        if brief:
+            return brief
         prev_hwnd, prev = self.last.get("hwnd"), dict(self.last.get("by_ref", {}))
         if self.strict:
             ok, msg = self.gate.require({"kind": "batch", "summary": "run these steps"}, strict=True,

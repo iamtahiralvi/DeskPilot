@@ -15,7 +15,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 
 # 2. Install the deskpilot command globally
 Write-Host "Installing deskpilot..."
-uv tool install --force --python 3.13 "$root"
+uv tool install --force --reinstall --python 3.13 "$root"  # --reinstall: never reuse a cached old build
 $exe = Join-Path $env:USERPROFILE ".local\bin\deskpilot.exe"
 if (-not (Test-Path $exe)) { $exe = (Get-Command deskpilot).Source }
 Write-Host "  -> $exe"

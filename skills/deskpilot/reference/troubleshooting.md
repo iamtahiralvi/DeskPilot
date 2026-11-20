@@ -6,6 +6,9 @@
 | `the user has been using the mouse for 60s` | They are still working | Don't fight them. Wait, then call `act` again with the remaining steps |
 | `… is hidden behind "…"` | A popup, menu or sticky header covers the element | Close/scroll it, or `screenshot()` and click what you see |
 | `PAUSED` / `STOPPED` by the user | The user paused or stopped you | Stop at once and report. Never resume yourself |
+| `NOT DONE YET: this is the first action of the task` | You acted before looking at the screen | Read the screen it returned, then re-send steps that fit it (use its refs) |
+| `PAUSED: this task reached the token budget` | The task used more screen text/screenshots than the user allows | Stop and report progress. Next time use `find`/`filter` and crops instead of full snapshots and screenshots |
+| `KILLED`, or the DeskPilot tools vanish / the server disconnects | The user hit the kill switch | Stop. Do not reconnect or retry; tell the user what you had done and wait |
 | `USER DENIED` | The user refused a permission dialog | Don't retry or work around it. Ask the user |
 | `not found: <text>` | No visible element matches | Check spelling, scroll, try a shorter text, `snapshot(scope="ocr")` |
 | A click hits the wrong thing | A stale ref or a moved layout | `screenshot()` to see what's there, then click the new ref or `[x, y]` |

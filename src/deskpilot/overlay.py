@@ -5,6 +5,8 @@ Runs as its own process (`python -m deskpilot.overlay`). JSON commands on stdin,
   paused{v: ""|paused|takeover|stopped|moved} hide show quit
 hide = task finished / agent idle: remove border, cursor and panel until the agent acts again.
 Writes user commands to stdout: PANIC PAUSE RESUME TAKEOVER GIVEBACK STOP "MODE strict|normal".
+Kill switch (panel button or Ctrl+Alt+Backspace) does not go through the server: this process terminates it
+directly (see killswitch.py), so it works even when the server is stuck in the middle of an action.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import threading
 import time
 from ctypes import wintypes
 
+from . import killswitch
 from . import theme as T
 
 KEY = "#010203"  # transparent colour key
@@ -28,15 +31,37 @@ def emit(cmd: str):
     sys.stdout.flush()
 
 
+def kill_now(reason: str):
+    """Kill switch: end the server (and its dialogs), release held keys, then exit this overlay too."""
+    try:
+        pid = int(os.environ.get(killswitch.SERVER_PID_ENV, "0")) or None
+        killswitch.kill(pid, reason)
+    finally:
+        os._exit(0)
+
+
 def _hotkey_thread(q: queue.Queue):
+    """Ctrl+Alt+Esc (pause) and Ctrl+Alt+Backspace (kill). Only one process can own a hotkey and every AI session
+    has its own overlay, so keep retrying: when the owner's session ends, this overlay takes over the keys."""
     user32 = ctypes.windll.user32
-    if not user32.RegisterHotKey(None, 1, 0x2 | 0x1 | 0x4000, 0x1B):  # Ctrl+Alt+Esc, no repeat
-        return
+    want = {1: 0x1B, 2: 0x08}
+    have: set[int] = set()
     msg = wintypes.MSG()
-    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-        if msg.message == 0x0312:
-            emit("PANIC")
-            q.put({"op": "toggle_pause"})
+    while True:
+        for hid, vk in want.items():
+            if hid not in have and user32.RegisterHotKey(None, hid, 0x2 | 0x1 | 0x4000, vk):
+                have.add(hid)
+        if len(have) == len(want):
+            user32.GetMessageW(ctypes.byref(msg), None, 0, 0)  # block until a hotkey arrives
+        elif user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1) == 0:  # PM_REMOVE
+            time.sleep(0.1)  # still waiting to own a key: re-check often so a kill is never late
+            continue
+        if msg.message != 0x0312:
+            continue
+        if msg.wParam == 2:  # handled on this thread, so a frozen UI can't delay it
+            kill_now(f"hotkey {killswitch.HOTKEY}")
+        emit("PANIC")
+        q.put({"op": "toggle_pause"})
 
 
 def _stdin_thread(q: queue.Queue):
@@ -87,6 +112,7 @@ STATES = {  # state -> (label, colour, active?)  active = filled dot + solid bor
     "takeover": ("You're in control", T.MUTED, False),
     "stopped": ("Stopped", T.MUTED, False),
     "moved": ("Paused · mouse moved", T.MUTED, False),
+    "budget": ("Paused · token budget", T.MUTED, False),
 }
 
 
@@ -152,6 +178,9 @@ class Panel:
         self.take_btn.grid(row=0, column=1, sticky="ew", padx=4)
         self.stop_btn = T.button(ctk, row, "Stop", self.on_stop, kind="primary", width=90)
         self.stop_btn.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        self.kill_btn = T.button(ctk, self.more, "Kill switch  ·  end DeskPilot now", self.on_kill, kind="danger",
+                                 width=290, height=30)
+        self.kill_btn.pack(fill="x", padx=16, pady=(8, 0))
 
         T.divider(ctk, self.more, pady=(12, 8), padx=16)
         self.strict = ctk.BooleanVar(value=False)
@@ -159,8 +188,9 @@ class Panel:
                       font=T.font(11), text_color=T.MUTED, fg_color=T.CARD_HOVER, progress_color=T.FG,
                       button_color=T.MUTED, button_hover_color=T.FG, switch_width=34, switch_height=18).pack(
             anchor="w", padx=16, pady=(0, 6))
-        ctk.CTkLabel(self.more, text="Ctrl + Alt + Esc  pauses or resumes anytime", text_color=T.FAINT,
-                     font=T.font(9), anchor="w").pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(self.more, text="Ctrl + Alt + Esc  pauses or resumes anytime\n"
+                                     "Ctrl + Alt + Backspace  kills DeskPilot at once", text_color=T.FAINT,
+                     font=T.font(9), anchor="w", justify="left").pack(fill="x", padx=16, pady=(0, 12))
 
         self.lines: list[str] = []
         self.win.update_idletasks()
@@ -203,6 +233,9 @@ class Panel:
     def on_stop(self):
         emit("RESUME" if self.app.paused == "stopped" else "STOP")
 
+    def on_kill(self):
+        kill_now("panel button")
+
     def on_mode(self):
         emit("MODE " + ("strict" if self.strict.get() else "normal"))
 
@@ -220,10 +253,11 @@ class Panel:
         self.dot.configure(text="●" if active else "○", text_color=col)
         self.state_lbl.configure(text=label, text_color=T.ON_ACCENT if active else col,
                                  fg_color=T.FG if active else T.CARD)
-        self.pause_btn.configure(text="Resume" if a.paused in ("paused", "moved") else "Pause")
+        self.pause_btn.configure(text="Resume" if a.paused in ("paused", "moved", "budget") else "Pause")
         self.take_btn.configure(text="Give back" if a.paused == "takeover" else "Take over")
         self.stop_btn.configure(text="Unlock" if a.paused == "stopped" else "Stop")
-        self.stats.configure(text=f"{a.actions} actions · ~{_k(a.tokens)} tokens sent to the AI")
+        task = f" · this task ~{_k(a.task)}" + (f" of {_k(a.budget)}" if a.budget else "") if a.task else ""
+        self.stats.configure(text=f"{a.actions} actions · ~{_k(a.tokens)} tokens sent to the AI{task}")
 
 
 def _k(n: int) -> str:
@@ -244,7 +278,7 @@ class Overlay:
         self.paused = ""
         self.state = "idle"
         self.state_text = ""
-        self.tokens = self.actions = 0
+        self.tokens = self.actions = self.task = self.budget = 0
         self.cursor = None
         self.last_activity = time.time()
         self.label_text = ""
@@ -336,6 +370,7 @@ class Overlay:
             self.panel.add_log(m.get("text", ""))
         elif op == "stats":
             self.tokens, self.actions = m.get("tokens", 0), m.get("actions", 0)
+            self.task, self.budget = m.get("task", 0), m.get("budget", 0)
         elif op == "paused":
             self.paused = m.get("v") or ""
         elif op == "toggle_pause":
@@ -388,7 +423,8 @@ class Overlay:
         # status chip: black pill, white hairline, dot + text
         if self.paused:
             text = {"takeover": "You're in control  ·  Give back from the panel",
-                    "stopped": "Agent stopped  ·  Unlock from the panel"}.get(
+                    "stopped": "Agent stopped  ·  Unlock from the panel",
+                    "budget": "Token budget reached  ·  Resume from the panel to allow more"}.get(
                 self.paused, "Agent paused  ·  Ctrl+Alt+Esc to resume")
         elif self.state == "asking":
             text = "Waiting for your permission"

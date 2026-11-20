@@ -1,4 +1,4 @@
-"""`deskpilot serve | pick | policy | doctor`."""
+"""`deskpilot serve | pick | policy | doctor | unlock`."""
 from __future__ import annotations
 
 import sys
@@ -40,8 +40,14 @@ def main() -> None:
         except Exception as e:
             print("ocr unavailable:", e)
         print("ok")
+    elif cmd == "unlock":
+        from .killswitch import clear_flag, killed
+
+        was = killed()
+        clear_flag()
+        print("kill switch cleared" if was else "kill switch was not set")
     else:
-        print("usage: deskpilot [serve|pick|policy|doctor]")
+        print("usage: deskpilot [serve|pick|policy|doctor|unlock]")
         sys.exit(2)
 
 

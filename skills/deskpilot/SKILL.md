@@ -6,7 +6,8 @@ description: Operates the user's real Windows PC through the DeskPilot MCP tools
 # Using the Windows desktop with DeskPilot
 
 You control ONE screen the user chose, with their real mouse and keyboard. The user watches and can Pause,
-Take over or Stop you at any time (Ctrl+Alt+Esc). The DeskPilot tools are the MCP tools whose names end in
+Take over or Stop you at any time (Ctrl+Alt+Esc), or hit the kill switch (Ctrl+Alt+Backspace), which ends
+DeskPilot at once. The DeskPilot tools are the MCP tools whose names end in
 `deskpilot__<tool>`, such as `mcp__deskpilot__snapshot`.
 
 ## Workflow
@@ -22,8 +23,12 @@ DeskPilot task:
 - [ ] 5. done()
 ```
 
-1. **Look.** `snapshot()` lists the top window on your screen. A web page shows its URL as `page <url>`.
-   `window("list")` shows every window; `screen_info()` shows which screen you control.
+1. **Look, always first.** Start every task with `snapshot()` and read it before you plan any step: which
+   window is on top, which page or state it is in (a web page shows its URL as `page <url>`), what is focused,
+   whether a dialog or popup is in the way. `window("list")` shows every window; `screen_info()` shows which
+   screen you control. Do the same after the user paused you or took over: the screen may have changed.
+   DeskPilot enforces this: if the first `act` of a task comes before any look, it is **not run** and returns
+   the screen instead. Read it and send steps that fit what is actually there.
 2. **Reuse or open.** If the page or app is already open, work in it. Otherwise call `launch("https://…")` or
    `launch("Notepad")`: it switches to an existing tab or window by itself and only opens a new one when needed.
    Never retype the URL of the page you are already on.
@@ -49,7 +54,7 @@ DeskPilot task:
 - **The user grabbed the mouse**: DeskPilot waits until they let go and redoes the step; the result starts with
   `note: the user took the mouse…`. The screen may have changed, so read the diff (or take a screenshot) before
   the next step. If it says they are still using the mouse, wait and call `act` again; don't fight them.
-- **PAUSED or STOPPED**: stop at once. Tell the user what is done and what is left. Never resume by yourself.
+- **PAUSED, STOPPED or KILLED**: stop at once. Tell the user what is done and what is left. Never resume by yourself.
 - Stay on your screen. Don't close or move the user's windows unless the task needs it.
 
 ## Reading the screen cheaply
