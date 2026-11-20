@@ -8,7 +8,7 @@
 | `PAUSED` / `STOPPED` by the user | The user paused or stopped you | Stop at once and report. Never resume yourself |
 | `NOT DONE YET: you haven't looked at the screen in the last 60s` | No snapshot, find, screenshot or act for a minute, or the user paused or took over since | Read the screen it returned, then re-send steps that fit it (use its refs) |
 | `NO visible change` on a step, or `⚠ ran N steps, but the screen did NOT change` | The steps most likely did nothing: focus elsewhere, keys not reaching the app, still loading | Don't continue as if it worked. `act(…, observe="screenshot")` or `screenshot()` to see why |
-| `⚠ VERIFY FAILED: the field shows "2", not "200"` | Keys were dropped (canvas apps redraw while keys arrive) and slower retyping didn't fix it | Click the field, `"clear": true`, `"delay_ms": 120`, or paste the value |
+| `⚠ VERIFY FAILED: "200" did not appear in the field; it shows "2"` | Keys were dropped (canvas apps redraw while keys arrive) and slower retyping didn't fix it, or (without `clear`) DeskPilot didn't retype so as not to touch other text | Click the field, `"clear": true`, `"delay_ms": 120`, or paste the value |
 | `USER BUSY` | The user is working on the screen right now | Stop retrying. Wait a while or ask the user, then call `act` with the remaining steps |
 | `WARNING: this image is (almost) all black` | You control a screen that is off, locked, or the wrong one | It names where windows are: `window("move_here", "w3")` or ask the user to `screen_info(op="switch")` |
 | `the screen was STILL CHANGING` | Loading or animating when the picture was taken | Look again in a moment, or `{"wait_stable": "window"}` / `{"wait_ocr": "…"}` first |

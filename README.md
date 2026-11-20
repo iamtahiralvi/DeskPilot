@@ -346,7 +346,7 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 | `act` | A batch of steps (see below). Returns one line per step and what changed; `observe="screenshot"` also returns an image |
 | `launch` | Open an app, URL, URI, file or folder, or `agent browser <url>`. Switches to it if it's already open |
 | `window` | list, focus, minimize, maximize, restore, close, move_here |
-| `clipboard` | Get or set clipboard text, or set it from a text file |
+| `clipboard` | Get or set clipboard text, or set it from a text file. What you had copied is saved and put back when the task ends (or with `restore`) |
 | `routine` | list, run, start, save, show or delete saved routines |
 | `screenshot` | See the screen when text isn't enough: whole screen, one window (`ref="window"`/`"w3"`), an element or a region; click what you see by `[x, y]`. Waits until the screen stops changing, and warns when the image is black (wrong or locked screen) |
 | `done` | Task finished: hides the border, tag and panel, and returns the steps taken plus a link to the step log |
@@ -356,7 +356,7 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 | Step | Example |
 |---|---|
 | Click, double-click, right-click, hover | `{"click": "e12"}`, `{"dblclick": "Report.pdf"}`, `{"click": {"ocr": "Save"}}`, `{"click": [640, 360]}` |
-| Type (real keystrokes) | `{"type": "hello", "into": "Message", "clear": true, "enter": true}`; `"verify": true` reads it back and retypes; `"delay_ms": 60` types slower |
+| Type (real keystrokes) | `{"type": "hello", "into": "Message", "clear": true, "enter": true}`; `"verify": true` checks the text arrived and retypes slower if keys were dropped; `"delay_ms": 60` types slower |
 | Paste text or a file | `{"paste": "…", "into": "e5", "clear": true}`, `{"paste_file": "C:\\work\\notes.txt"}` (your clipboard is put back) |
 | Go to a URL | `{"navigate": "https://example.com"}`, `"new_tab": true` |
 | Keys | `{"key": "ctrl+s"}`, `{"key": "tab", "repeat": 3}`, `{"key_down": "shift"}`, `{"key_up": "shift"}` |

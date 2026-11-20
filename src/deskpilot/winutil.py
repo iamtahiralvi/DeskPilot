@@ -159,3 +159,24 @@ def set_state(hwnd: int, op: str) -> None:
 
 def close(hwnd: int) -> None:
     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+
+
+def caret_rect() -> tuple[int, int, int, int] | None:
+    """Screen rect of the text cursor in the foreground app, for apps that use the system caret (Notepad, most
+    Win32 text boxes). None when the app draws its own (browsers, canvas apps)."""
+    info = _GUITHREADINFO(cbSize=ctypes.sizeof(_GUITHREADINFO))
+    if not user32.GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndCaret:
+        return None
+    r = info.rcCaret
+    tl, br = wintypes.POINT(r.left, r.top), wintypes.POINT(r.right, r.bottom)
+    user32.ClientToScreen(info.hwndCaret, ctypes.byref(tl))
+    user32.ClientToScreen(info.hwndCaret, ctypes.byref(br))
+    if br.y - tl.y < 2:
+        return None
+    return tl.x, tl.y, max(br.x, tl.x + 1), br.y

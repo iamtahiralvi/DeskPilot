@@ -53,7 +53,20 @@ class _NotWindows:
 desk = Desktop() if IS_WINDOWS else _NotWindows()
 
 
+from . import __version__
+
+# Clients can keep a tool list from an older DeskPilot after it is updated, so the first result of every server
+# run also names what act can do now (once, ~80 tokens).
+WHATS_NEW = (f"[DeskPilot {__version__}] act steps you may not see in an older tool list: "
+             '{"paste":"long text","into":T?,"clear":true?} {"paste_file":"C:\\\\path\\\\file.txt"} (both give the '
+             'user\'s clipboard back) {"navigate":"https://..."} {"type":"200","verify":true,"delay_ms":60} '
+             '{"click":{"ocr":"Save"}} {"wait_ocr":"Save","timeout":60} {"wait_stable":"window","timeout":60} '
+             '{"read":[x,y,w,h]}; act(observe="screenshot") returns an image too; clipboard(op="restore").')
+_told = False
+
+
 async def _run(fn, *a, **kw):
+    global _told
     if not IS_WINDOWS:
         return NOT_WINDOWS
     desk.busy()
@@ -68,6 +81,9 @@ async def _run(fn, *a, **kw):
         desk.ui_state("paused" if desk.paused else "idle")
         desk.idle()
     out = desk.privacy.text(out)
+    if not _told:
+        _told = True
+        out = WHATS_NEW + "\n" + out
     desk.add_tokens(len(out) // 4)
     return out
 
@@ -161,10 +177,12 @@ async def window(op: Literal["list", "focus", "minimize", "maximize", "restore",
 
 
 @mcp.tool(structured_output=False)
-async def clipboard(op: Literal["get", "set"] = "get", text: str | None = None, file: str | None = None) -> str:
+async def clipboard(op: Literal["get", "set", "restore"] = "get", text: str | None = None,
+                    file: str | None = None) -> str:
     """Read or write clipboard text (cheaper than selecting/copying on screen). set with file= puts a text file's
-    contents there. To paste into an app, prefer act's {"paste": ...} / {"paste_file": ...} step: it does the
-    Ctrl+V for you and gives the user their clipboard back."""
+    contents there; the user's own clipboard is saved first and put back by op='restore' or at done().
+    To paste into an app, prefer act's {"paste": ...} / {"paste_file": ...} step: it does the Ctrl+V for you and
+    gives the user their clipboard back at once."""
     return await _run(desk.clipboard, op, text, file)
 
 

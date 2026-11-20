@@ -81,7 +81,7 @@ image-heavy apps; checking how a form looks before the user sends it.
 - **Type into a field**: `{"type":"hello","into":"Message"}`. Replace its content with `"clear": true`.
   `type` uses real keystrokes and never touches the clipboard.
 - **Long text, code or a file**: `{"paste":"…","into":"e5","clear":true}` or `{"paste_file":"C:\\work\\body.dart",…}`.
-  The user's clipboard is put back afterwards. Don't use `clipboard("set")` + Ctrl+V for this.
+  The user's clipboard is put back afterwards. (`clipboard("set")` also saves it; it comes back at `done()`.)
 - **Wait, don't sleep**: `{"wait":"Inbox","timeout":15}`; for something to disappear add `"gone": true`. In apps with
   no readable text: `{"wait_ocr":"Save","timeout":60}` or `{"wait_stable":"window"}`.
 - **Go to a URL**: `{"navigate":"https://x.com/home"}` (add `"new_tab": true` for a new tab). Don't use Ctrl+L.

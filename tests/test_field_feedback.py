@@ -78,6 +78,42 @@ def test_step_helpers():
 
 
 @win
+def test_verify_checks_the_text_was_added_not_that_the_field_equals_it():
+    from deskpilot.desktop import Desktop
+
+    added = Desktop._was_added
+    doc = "200 Unlock Mission\nline2 ok\n"
+    assert added(doc, doc + "X", "X", clear=False)             # typed at the end of a multi-line text
+    assert not added(doc, doc, "X", clear=False)               # nothing arrived
+    assert added("X marks", "X marks X", "X", clear=False)     # already had an X: one more must appear
+    assert not added("X marks", "X marks", "X", clear=False)
+    assert added(None, "Height 200 px", "200", clear=False)    # nothing known before: contains is enough
+    assert added("Height 2", "Height 200", "200", clear=True)
+    assert not added("", "2", "200", clear=True)               # keys dropped: "200" became "2"
+
+
+@win
+def test_clipboard_set_is_given_back(monkeypatch):
+    from deskpilot import clip
+    from deskpilot.desktop import Desktop
+
+    store = {"text": "the user's copied code"}
+    monkeypatch.setattr(clip, "save", lambda: ([(13, store["text"])], 0))
+    monkeypatch.setattr(clip, "restore", lambda saved: store.update(text=saved[0][1]))
+    monkeypatch.setattr(clip, "set_text", lambda t, private=False: store.update(text=t))
+    monkeypatch.setattr(clip, "get_text", lambda: store["text"])
+    d = Desktop.__new__(Desktop)
+    d._user_clip = d._our_clip = None
+    d._claim = lambda: None
+    assert "saved" in d.clipboard("set", "SENTINEL-123") and store["text"] == "SENTINEL-123"
+    d.clipboard("set", "second")                                 # still remembers the user's, not ours
+    assert "put back" in d._restore_user_clip() and store["text"] == "the user's copied code"
+    d.clipboard("set", "agent text")
+    store["text"] = "user copied something new"                  # meanwhile the user copied: keep theirs
+    assert d._restore_user_clip() == "" and store["text"] == "user copied something new"
+
+
+@win
 def test_read_file_encodings(tmp_path):
     from deskpilot.clip import read_file
 

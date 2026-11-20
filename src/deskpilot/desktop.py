@@ -118,6 +118,8 @@ class Desktop:
         self.task_log: list[str] = []  # steps of the current task, returned by done()
         self._moving = None       # thumb box of a screen area that never stops changing (video), ignored
         self._last_thumb = None
+        self._user_clip = None    # the user's clipboard, saved before the agent's first clipboard('set')
+        self._our_clip = None     # what the agent put there
         self.recording: list | None = None
         self.tokens = 0
         self.task_tokens = 0
@@ -173,6 +175,7 @@ class Desktop:
         self.task_tokens = 0
         steps, self.task_log = self.task_log, []
         self._moving = None
+        restored = self._restore_user_clip() if self._user_clip is not None else ""
         if self.screen_lock.held:
             self.screen_lock.release()
             self.timeline.record("✓ " + (summary or "task finished") if reason == "done" else "task went idle",
@@ -186,6 +189,8 @@ class Desktop:
         out = "Overlay hidden. Tell the user what you did." + (
             f" Note: the user has you {self.pause_reason.upper()}; they unlock it from the panel next time."
             if self.paused else "")
+        if restored:
+            out += f" ({restored})"
         if reason == "done" and steps:
             shown = steps[-40:]
             out += f"\nWhat you did this task ({len(steps)} steps" + (", last 40" if len(steps) > 40 else "") + "):\n"
@@ -1051,13 +1056,18 @@ class Desktop:
             self._typed_secret = bool(f and f.password)
             self._require({"kind": "type", "password": bool(f and f.password), "name": f.name if f else ""})
             delay = _delay(st, 0.012)
+            check = bool(st.get("verify")) and not self._typed_secret
+            read = before = None
+            if check:  # decide how to read the field, and what it held, before typing changes it
+                read = self._field_reader(rect, clicked="into" in st)
+                before = read()[0] if read and not st.get("clear") else None
             if st.get("clear"):
                 self.input.press("ctrl+a")
                 self.input.press("backspace")
             self.input.type_text(text, delay)
             note = ""
-            if st.get("verify") and not self._typed_secret:
-                note = self._verify_typed(text, rect, delay, bool(st.get("clear")), st.get("into"))
+            if check:
+                note = self._verify_typed(text, read, before, delay, bool(st.get("clear")), st.get("into"))
             if st.get("enter"):
                 self.input.press("enter")
             return note
@@ -1132,43 +1142,71 @@ class Desktop:
     def _read_text(self, rect: Rect) -> str:
         return " | ".join(ln.text for ln in ocr(rect, self._grab_safe(rect)))
 
-    def _field_text(self, rect=None) -> tuple[str | None, str]:
-        """What the focused field shows now: its accessible value, else OCR of the field's box."""
+    def _field_reader(self, rect=None, clicked: bool = False):
+        """Decide, BEFORE typing, how to read this field back: () -> (text or None, how).
+        1. its accessible value (text boxes, and documents such as Notepad's; not a browser page, whose value is
+           its URL); 2. OCR of the field's box; 3. OCR of a band around the text cursor (the caret), or around
+           the point clicked by "into"; else None (can't tell where the text went)."""
         f = self.uia.focused()
-        if f and f.role in ("edit", "combo") and f.value not in (None, ""):
-            return str(f.value), "field value"
+        if f and f.value is not None and not f.password and (
+                f.role in ("edit", "combo") or (f.role == "doc" and not re.match(r"^[a-z][a-z0-9+.-]*:", str(f.value)))):
+            def by_value():
+                g = self.uia.focused()
+                return (str(g.value) if g and g.value is not None else None), "field value"
+            return by_value
         area = self.areas[0]
         big = lambda r: (r[2] - r[0]) * (r[3] - r[1]) > 0.25 * area.width * area.height  # noqa: E731
         if (not rect or big(rect)) and f and f.rect and f.rect[2] > f.rect[0] and not big(f.rect):
             rect = f.rect
         if not rect or big(rect):
-            # A canvas app: the 'element' is the whole canvas. Read a band around where the field was clicked.
-            from .act import cursor_pos
+            caret = winutil.caret_rect()
+            if caret:
+                rect = (caret[0] - 260, caret[1] - 6, caret[0] + 260, caret[3] + 6)
+            elif clicked:  # a canvas app: the 'element' is the whole canvas; read around where we clicked
+                from .act import cursor_pos
 
-            x, y = cursor_pos()
-            rect = (x - 200, y - 24, x + 200, y + 24)
+                x, y = cursor_pos()
+                rect = (x - 200, y - 24, x + 200, y + 24)
+            else:
+                return None
         l, t, r, b = rect
         l, t, r, b = max(area.left, l - 4), max(area.top, t - 4), min(area.right, r + 4), min(area.bottom, b + 4)
         if r - l < 4 or b - t < 4:
-            return None, ""
-        return self._read_text(Rect(l, t, r - l, b - t)), "OCR"
+            return None
+        box = Rect(l, t, r - l, b - t)
+        return lambda: (self._read_text(box), "OCR")
 
-    def _verify_typed(self, text: str, rect, delay: float, clear: bool, into) -> str:
+    @staticmethod
+    def _was_added(before: str | None, after: str, text: str, clear: bool) -> bool:
+        """Did typing put `text` into the field? Not 'is the field equal to it': typing usually adds to text that
+        is already there. Counted, so an X typed into a field that already had an X still has to add one."""
+        w, a = norm_text(text), norm_text(after)
+        if not w:
+            return True
+        if clear or before is None:
+            return w in a
+        return a.count(w) > norm_text(before).count(w)
+
+    def _verify_typed(self, text: str, read, before, delay: float, clear: bool, into) -> str:
         """Read the field back; if keys were dropped (canvas apps redraw while keys arrive), retype slower."""
         if "\n" in text or len(text) > 200:
             return "verify skipped (multi-line or long text)"
+        if read is None:
+            return ("could not verify: no readable field and no text cursor found (give \"into\", or check with "
+                    "a screenshot)")
         want = norm_text(text)
         for attempt in range(3):
             time.sleep(0.3)
-            got, how = self._field_text(rect)
+            got, how = read()
             if got is None:
                 return "could not read the field back to verify (take a screenshot to check)"
-            have = norm_text(got)
-            if want in have:
+            if self._was_added(before, got, text, clear):
                 return f"verified ({how})" + (f" after {attempt} slower retype(s)" if attempt else "")
-            # Retype only when the field holds nothing but (part of) our text, so nothing of the user's is lost.
-            if attempt == 2 or not (clear or have in want):
-                return f'⚠ VERIFY FAILED: the field shows "{_clip(got, 60)}", not "{_clip(text, 60)}"'
+            # Retype only when nothing of the user's can be lost: "clear" was asked, or the field was empty.
+            empty_before = not norm_text(before or "")
+            if attempt == 2 or not (clear or (empty_before and norm_text(got) in want)):
+                return (f'⚠ VERIFY FAILED: "{_clip(text, 40)}" did not appear in the field; it shows '
+                        f'"{_clip(got, 60)}"' + ("" if clear else " (\"clear\": true lets DeskPilot retype it)"))
             if into is not None:
                 x, y, _, _ = self._resolve(into)
                 self.input.click(x, y)
@@ -1591,15 +1629,36 @@ class Desktop:
                 self._claim()
                 if file:
                     text = clip.read_file(file)
-                clip.set_text(text or "")
+                if self._user_clip is None:  # first set of this task: keep what the user had copied
+                    self._user_clip = clip.save()[0]
+                clip.set_text(text or "", private=True)
+                self._our_clip = text or ""
                 return (f"clipboard set ({len(text or '')} chars{' from ' + os.path.basename(file) if file else ''}). "
-                        "This replaced what the user had there; act's paste/paste_file steps avoid that.")
+                        "The user's own clipboard is saved: it is put back at done(), or now with "
+                        "clipboard(op='restore'). For pasting, act's paste/paste_file steps are simpler.")
+            if op == "restore":
+                return self._restore_user_clip(force=True)
             data = clip.get_text()
         except (OSError, ValueError, RuntimeError) as e:
             raise AgentError(str(e))
         if data is None:
             return "(clipboard has no text)"
         return data if len(data) < 6000 else data[:6000] + f"…(+{len(data) - 6000} chars)"
+
+    def _restore_user_clip(self, force: bool = False) -> str:
+        """Put back what the user had copied before clipboard('set'). At the end of a task this only happens
+        while the clipboard still holds the agent's text: if the user copied something new meanwhile, keep it."""
+        if self._user_clip is None:
+            return "nothing to restore: the clipboard was not changed with clipboard('set') this task"
+        try:
+            if not force and clip.get_text() != self._our_clip:
+                self._user_clip = self._our_clip = None
+                return ""
+            clip.restore(self._user_clip)
+        except RuntimeError as e:
+            return f"could not restore the clipboard: {e}"
+        self._user_clip = self._our_clip = None
+        return "the user's clipboard was put back"
 
     def switch_screen(self, screen: str) -> str:
         ok, msg = self.gate.require({"kind": "screen", "name": f"screen {screen}"})

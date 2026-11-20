@@ -64,12 +64,13 @@ Key names: `enter`, `tab`, `esc`, `space`, `backspace`, `delete`, `home`, `end`,
 `up/down/left/right`, `f1`…`f24`, `win`, `ctrl`, `alt`, `shift`.
 
 - `type` sends real keystrokes (about 12 ms per character) and **never touches the clipboard**.
-- `verify: true` reads the field back (its value, or OCR of the field when the app has no accessible value) and
-  retypes more slowly if keys were dropped. Canvas apps that redraw on every key can turn "200" into "2". Use it for
+- `verify: true` reads the field before and after typing (its value, or OCR of the field or of the line at the
+  text cursor) and checks that your text was **added**, so typing at the end of a longer text works. If keys were
+  dropped it retypes more slowly, but only with `"clear": true` or into an empty field, so nothing else is lost. Canvas apps that redraw on every key can turn "200" into "2". Use it for
   short values in such apps; `delay_ms` sets a slower speed from the start.
 - `paste` / `paste_file` are for long text. They save the user's clipboard, paste, and put it back. The text is also
-  kept out of Win+V history. The report says how many characters were pasted. Don't use `clipboard("set")` +
-  Ctrl+V for this: that loses whatever the user had copied.
+  kept out of Win+V history. The report says how many characters were pasted. If you do use `clipboard("set")`,
+  the user's clipboard is saved and put back at `done()` or with `clipboard(op="restore")`.
 - `navigate` focuses the browser window and its address bar (checking that the cursor is really there), types the
   URL, and presses Enter. It doesn't touch the clipboard, and the report shows the address bar afterwards.
 
