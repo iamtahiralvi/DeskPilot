@@ -26,6 +26,9 @@
 | Only `e` refs on a web page | Read through accessibility | Normal. Use the DeskPilot browser for `b` refs if you need precision |
 | `outside the screen you are allowed to control` | The target is on another monitor | `window("move_here", "w3")`, or ask the user to `screen_info(op="switch")` |
 | `private window` | A password manager or security window | Never interact with it. Ask the user |
+| `ADMIN WINDOW: … runs as administrator`, or a window marked `admin` | Windows blocks clicks, typing and reading from normal programs into admin programs (installers, Task Manager, OCCT, HWiNFO). The step was not done | Screenshots and `snapshot(scope="ocr")` still read it. To act in it, ask the user to do the step, or call `screen_info(op="admin")`: the user confirms and approves a UAC prompt, then your input reaches admin windows until `done()` |
+| `Admin mode is NOT on: the user declined…` | The user said no to admin mode | Don't ask again this task. Ask the user to do the admin step |
+| `WINDOWS SECURE DESKTOP`, or a UAC prompt ("Do you want to allow this app to make changes?") | Windows' secure desktop is showing (UAC or Ctrl+Alt+Del). Nothing can see or click it, not even admin mode; DeskPilot runs no steps meanwhile | Stop and ask the user to answer it, then `snapshot()` again |
 | A dialog appears that you didn't expect | A system or site prompt | Read it. If it asks for consent, credentials or payment, stop and ask the user |
 | The app has no accessibility tree (Flutter web apps, games, custom-drawn apps) | `find`/`snapshot` see almost nothing | `snapshot(scope="ocr")` gives clickable OCR refs; `{"click": {"ocr": "Save"}}`; `{"wait_ocr": "Save"}`; `{"type": …, "verify": true}`; `{"read": R}` to check a value; `act(…, observe="screenshot")` |
 

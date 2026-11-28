@@ -53,6 +53,9 @@ DeskPilot task:
 - **Never type passwords, one-time codes or card numbers.** Ask the user to type them.
 - **Never click security or consent prompts**: "Allow remote debugging?", User Account Control, password
   managers. Those are the user's decision.
+- **Admin windows** (marked `admin` in `window("list")`, or `ADMIN WINDOW` in a result) run as administrator, and
+  Windows blocks your input to them. Ask the user to do the step, or call `screen_info(op="admin")` so they can
+  turn on admin mode (they confirm, then approve UAC). It lasts until `done()`. Ask once; if they decline, don't ask again.
 - **USER DENIED**: don't retry and don't work around it. Tell the user.
 - **The user grabbed the mouse**: DeskPilot waits until they let go and redoes the step; the result starts with
   `note: the user took the mouse…`. The screen may have changed, so read the diff (or take a screenshot) before

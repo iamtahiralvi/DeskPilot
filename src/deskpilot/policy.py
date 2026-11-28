@@ -63,6 +63,13 @@ DEFAULT_POLICY = {
     # from the panel ("What did it do?") or with `deskpilot timeline`. Deleted after timeline_keep_days.
     "timeline": True,
     "timeline_keep_days": 7,
+    # Windows blocks clicks and typing from normal programs into programs that run as administrator (installers,
+    # Task Manager, regedit, hardware tools). Admin mode starts a small DeskPilot helper with a UAC prompt so the
+    # agent can use those windows too. ask = the agent may ask (you confirm, then approve UAC) and it ends at
+    # done() (or after admin_idle_minutes of silence); always = UAC once at the first call, on for the whole session; off = never.
+    "admin_mode": "ask",
+    # In "ask" mode, admin mode also ends when the agent has made no call for this many minutes (0 = only at done()).
+    "admin_idle_minutes": 5,
     "ask_click_words_extra": ["rollout", "roll out", "start rollout", "release to production", "unpublish",
                               "send for review", "delete app", "remove app"],
 }
@@ -142,6 +149,8 @@ class Policy:
                 return Decision("ask", f"launch {app}", f"launch:{base}")
         if kind == "close" and self.rules["ask_close_window"]:
             return Decision("ask", f"close window '{a.get('window', '')}'", f"close:{a.get('window', '')}")
+        if kind == "admin":
+            return Decision("ask", "turn on admin mode (let the AI use windows that run as administrator)", "admin")
         if kind == "screen" and self.rules["ask_switch_screen"]:
             return Decision("ask", f"switch control to {a.get('name')}", "screen")
         if strict and kind not in ("read",):

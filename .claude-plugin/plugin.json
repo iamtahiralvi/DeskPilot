@@ -1,7 +1,7 @@
 {
   "name": "deskpilot",
   "displayName": "DeskPilot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Low-token Windows computer use: the DeskPilot MCP server, a skill that teaches the agent to use it well, and a hook that auto-approves read-only screen reads.",
   "author": {
     "name": "Tahir Alvi",

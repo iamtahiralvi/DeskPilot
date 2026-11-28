@@ -78,6 +78,7 @@ Snapshots are trimmed without losing anything the agent can use: an element nest
 - **🎨 Canvas apps.** Apps drawn on a canvas (Flutter web apps, design tools, games) have no readable elements, so DeskPilot reads them by OCR: click text with `{"click": {"ocr": "Save"}}`, wait with `{"wait_ocr": "Save"}` or `{"wait_stable": "window"}`, check a value with `{"read": …}`, and type with `"verify": true`, which reads the field back and retypes slower when keys were dropped. `act(…, observe="screenshot")` acts and looks in one call.
 - **📋 Your clipboard stays yours.** Typing uses real keystrokes, never the clipboard. Long text and files go in with `{"paste": …}` / `{"paste_file": …}`, which put back whatever you had copied and keep the pasted text out of Win+V history. `{"navigate": url}` opens a URL through the address bar without touching the clipboard either.
 - **🔁 Routines.** Record a task once, add `{{placeholders}}`, and replay it with one call.
+- **🛡️ Admin mode, only when you allow it.** Windows blocks normal programs from clicking or typing into programs that run as administrator (installers, Task Manager, regedit, hardware tools like OCCT or HWiNFO). DeskPilot spots these windows and says so, instead of clicking blindly. When the agent needs one, it can ask for **admin mode**: you confirm, then approve a Windows UAC prompt. See [Admin windows](#admin-windows-and-admin-mode).
 - **🔐 Ask-first permissions.** Deleting, paying, sending, installing, signing out, closing windows, typing into password fields and opening terminals all show an **Allow once / Allow for session / Deny** dialog. An unanswered dialog is denied after 60 s. Everything is logged to `~/.deskpilot/audit.jsonl`.
 - **🚦 One AI at a time.** If you run several AI sessions, only one can use the mouse and keyboard at a time. The first to act holds the computer until its task ends; the others are told "BUSY: another AI session (claude in my-project) is using this computer" instead of fighting over the cursor. Reading the screen never waits. A lock left by a crashed or killed session is taken over automatically.
 - **📼 Step log.** Every step is logged with a small picture of the screen right after it (private windows blacked out). Click **What did it do?** on the panel, or run `deskpilot timeline`, to review it, even after a kill. Kept for 7 days.
@@ -340,7 +341,7 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 
 | Tool | What it does |
 |---|---|
-| `screen_info` | Screens, the controlled screen, mode. `pick` reopens the picker; `switch` changes the screen (asks you) |
+| `screen_info` | Screens, the controlled screen, mode. `pick` reopens the picker; `switch` changes the screen (asks you); `admin` asks you to turn on admin mode, `admin_off` ends it |
 | `snapshot` | Text list of elements with refs. Scopes: `window`, `page`, `screen`, `taskbar`, `ocr` (clickable OCR refs). `region` reads just one area by OCR |
 | `find` | Find elements by text or role, across the web page, the accessibility tree and OCR |
 | `act` | A batch of steps (see below). Returns one line per step and what changed; `observe="screenshot"` also returns an image |
@@ -367,6 +368,33 @@ For more precise web control (`b12` refs, elements outside the visible area), th
 
 Targets are a ref (`e12`, `b12`), visible text, text found by OCR (`{"ocr": "Save"}`), or `[x, y]` pixels of the latest screenshot.
 
+## Admin windows and admin mode
+
+Windows gives every program an *integrity level*. DeskPilot runs at your normal level, like your browser. Programs that ran after a UAC prompt run at the **administrator** level. That includes installers, Task Manager, regedit, Device Manager, and tools such as OCCT, HWiNFO, DDU or MSI Afterburner. Windows silently drops clicks and keystrokes from normal programs into admin programs, and hides their buttons and fields too. This is called *User Interface Privilege Isolation* (UIPI). It stops malware from clicking "Yes" inside an admin tool.
+
+What DeskPilot does about it:
+
+- **It tells the agent.** Admin windows are marked `admin` in `window("list")`. A snapshot of one says what's going on. A click, typing or a key aimed at one is **not sent**, and the agent gets an `ADMIN WINDOW` message instead of a vague "no visible change". This also stops a dropped click from landing on the window behind it.
+- **Screenshots and OCR keep working**, so the agent can still read an admin window and guide you through it.
+- **Admin mode, if you want it.** The agent calls `screen_info(op="admin")`:
+  1. DeskPilot asks you: **Allow once / Allow for session / Deny**.
+  2. Windows shows a **UAC prompt**. It names *Python*, the program DeskPilot runs on. Click **Yes**.
+  3. A small DeskPilot **admin helper** starts. Until the task ends (`done()`), DeskPilot's mouse and keyboard input, window commands and screen reading go through the helper, so they reach admin windows too. If the agent goes quiet for 5 minutes (`admin_idle_minutes`), admin mode turns off by itself. A shorter pause, while the agent thinks, doesn't cost you another UAC prompt.
+
+  Apps the agent opens with `launch()` still start at the normal level. The helper only talks to the DeskPilot process that started it, over a private pipe. It quits when admin mode turns off, when the AI session closes, or when you hit the kill switch. Before quitting, it lets go of any key or mouse button that is still held down.
+- **UAC prompts themselves can't be clicked**, not even in admin mode. Windows shows them on a separate secure desktop, so they're always yours to answer. DeskPilot notices when that desktop is showing. It tells the agent a prompt is waiting for you, rather than handing it a black screenshot, and runs none of its steps until you've answered.
+- **Hovering works without admin mode.** Moving the pointer isn't blocked by Windows, so tooltips in admin windows still show.
+
+Set `admin_mode` in the policy file:
+
+| Value | Behaviour |
+|---|---|
+| `ask` (default) | The agent can ask. You confirm, then approve UAC. Admin mode ends at `done()`, or after `admin_idle_minutes` (default 5) without a call |
+| `always` | One UAC prompt at the agent's first call, then admin mode stays on until the AI session ends |
+| `off` | Never. Admin windows can be read, but never clicked or typed into |
+
+Admin mode gives the agent the same reach into admin windows that you have. Turn it on only for tasks you're watching.
+
 ## Configuration
 
 Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Edit the file, then restart your agent.
@@ -387,6 +415,8 @@ Rules live in `~/.deskpilot/policy.yaml`. `deskpilot policy` prints its path. Ed
 | `look_fresh_seconds` | How recent "recently" is: a look or action within this many seconds counts (default `60`) |
 | `token_budget_per_task` | Pause the agent once one task (until it calls `done()`) has received this many tokens from DeskPilot, so a stuck loop can't burn tokens unseen. **Resume** on the panel allows another budget's worth (default 100000, `0` = no limit) |
 | `hide_overlay_after_idle_seconds` | Hide the overlay when the agent goes quiet (default 30, `0` = never) |
+| `admin_mode` | `ask` (default), `always` or `off`: whether the agent may use windows that run as administrator, after a UAC prompt. See [Admin windows](#admin-windows-and-admin-mode) |
+| `admin_idle_minutes` | In `ask` mode, also end admin mode after this many minutes without a call (default 5, `0` = only at `done()`) |
 | `wait_for_user_mouse_seconds`, `user_mouse_idle_seconds` | When you grab the mouse, the agent waits for it to be still this long (default 1.5 s), for up to 60 s per call |
 
 Other files in `~/.deskpilot/`:

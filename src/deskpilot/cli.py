@@ -1,4 +1,4 @@
-"""`deskpilot serve | pick | policy | doctor | unlock | timeline`."""
+"""`deskpilot serve | pick | policy | doctor | unlock | timeline` (+ the internal `admin-helper`)."""
 from __future__ import annotations
 
 import sys
@@ -39,6 +39,9 @@ def main() -> None:
             print("ocr lines on screen 1:", len(ocr(monitors()[0])))
         except Exception as e:
             print("ocr unavailable:", e)
+        from .elevation import LEVEL_NAMES, own_level
+
+        print("deskpilot runs at:", LEVEL_NAMES.get(own_level(), hex(own_level())), "level")
         print("ok")
     elif cmd == "unlock":
         from .killswitch import clear_flag, killed
@@ -46,6 +49,12 @@ def main() -> None:
         was = killed()
         clear_flag()
         print("kill switch cleared" if was else "kill switch was not set")
+    elif cmd == "admin-helper":  # started by the server with a UAC prompt; see elevation.py
+        from .elevation import serve_helper
+
+        if len(sys.argv) != 4:
+            sys.exit(2)
+        sys.exit(serve_helper(sys.argv[2], int(sys.argv[3])))
     elif cmd == "timeline":
         from .timeline import open_html
 

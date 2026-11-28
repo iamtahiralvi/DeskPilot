@@ -1,0 +1,127 @@
+"""Admin windows (UIPI) and the admin helper's pipe protocol. The helper runs without elevation here: same code
+path, no UAC prompt."""
+import os
+import subprocess
+import sys
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+
+
+def test_own_level_and_self_not_above_us():
+    from deskpilot import elevation as e
+
+    assert e.own_level() in (e.MEDIUM, e.HIGH, e.SYSTEM)
+    assert e.process_level(os.getpid()) == e.own_level()
+    assert not e.is_above_us(os.getpid())
+
+
+def test_blocked_message_says_what_to_do():
+    from deskpilot.elevation import blocked_message
+
+    m = blocked_message("OCCT", "OCCT.exe", True)
+    assert "ADMIN WINDOW" in m and "OCCT.exe" in m and 'screen_info(op="admin")' in m and "NOT done" in m
+    off = blocked_message("OCCT", "OCCT.exe", False)
+    assert "screen_info" not in off and "switched off" in off
+
+
+def test_admin_needs_confirmation_by_policy():
+    from deskpilot.policy import Policy
+
+    d = Policy(rules=__import__("deskpilot.policy", fromlist=["DEFAULT_POLICY"]).DEFAULT_POLICY.copy()).check(
+        {"kind": "admin"})
+    assert d.level == "ask" and d.key == "admin"
+
+
+def test_node_roundtrip():
+    from deskpilot.elevation import node_from_dict, node_to_dict
+    from deskpilot.perceive import Node
+
+    n = Node("window", "OCCT", rect=(1, 2, 3, 4), children=[Node("button", "Start", rect=(5, 6, 7, 8))])
+    back = node_from_dict(node_to_dict(n))
+    assert back == n and isinstance(back.rect, tuple) and back.children[0].name == "Start"
+    assert node_from_dict(None) is None
+
+
+def test_helper_protocol_unelevated():
+    from deskpilot import elevation as e
+
+    h = e.AdminHelper()
+    h.start(elevate=False, timeout=60)
+    try:
+        assert h.active and h.pid
+        assert h.call("ping") == "pong"
+        assert h.call("input", items=[]) is True  # nothing sent, but the round trip works
+        f = h.call("focused")
+        assert f is None or "role" in f
+        with pytest.raises(e.HelperError):
+            h.call("no_such_op")
+        assert h.active  # an error answer doesn't kill the helper
+    finally:
+        h.stop()
+    assert not h.active
+    with pytest.raises(e.HelperError):
+        h.call("ping")
+
+
+def test_helper_refuses_a_pipe_owned_by_another_process():
+    """The helper only serves the server named on its command line."""
+    import win32file
+    import win32pipe
+
+    name = rf"\\.\pipe\deskpilot-test-{os.getpid()}"
+    pipe = win32pipe.CreateNamedPipe(name, win32pipe.PIPE_ACCESS_DUPLEX, 0, 1, 4096, 4096, 0, None)
+    try:
+        p = subprocess.run([sys.executable, "-I", "-m", "deskpilot.cli", "admin-helper", name, str(os.getpid() + 1)],
+                           timeout=60)
+        assert p.returncode == 3
+    finally:
+        win32file.CloseHandle(pipe)
+
+
+def test_secure_desktop_check_returns_a_bool():
+    from deskpilot.elevation import SECURE_DESKTOP_MSG, secure_desktop
+
+    assert isinstance(secure_desktop(), bool)
+    assert "UAC" in SECURE_DESKTOP_MSG and "user" in SECURE_DESKTOP_MSG
+
+
+class _FakeAdmin:
+    active = True
+
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+        self.active = False
+
+
+def _desk_stub(mode="ask", idle=300.0):
+    """Just enough of a Desktop for the admin-mode lifetime logic."""
+    from deskpilot.desktop import Desktop
+
+    d = Desktop.__new__(Desktop)
+    d.admin, d.admin_mode, d.admin_idle = _FakeAdmin(), mode, idle
+    d._idle_timer = d._admin_timer = None
+    d.idle_hide = 0
+    d.ui_log = lambda *a, **k: None
+    return d
+
+
+def test_admin_mode_survives_idle_but_expires_later():
+    d = _desk_stub(idle=0.2)
+    d.idle()
+    assert d._admin_timer is not None and d.admin.active  # the call ended; admin mode waits
+    d.busy()
+    assert d._admin_timer is None and d.admin.active  # a new call cancels the countdown
+    d.idle()
+    d._admin_timer.join(2)
+    assert d.admin.stopped
+
+
+def test_always_mode_has_no_admin_countdown():
+    d = _desk_stub(mode="always", idle=0.2)
+    d.idle()
+    assert d._admin_timer is None

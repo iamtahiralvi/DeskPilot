@@ -16,6 +16,18 @@ from .config import Rect
 user32 = ctypes.windll.user32
 dwmapi = ctypes.windll.dwmapi
 OWN_PIDS: set[int] = {os.getpid()}
+# Set while the admin helper runs (elevation.py): window commands go through it so they also work on admin windows.
+remote = None
+
+
+def _via_helper(op: str, **args):
+    """Run a window command in the admin helper. Returns (True, result), or (False, None) to do it here."""
+    if remote is None:
+        return False, None
+    try:
+        return True, remote(op, **args)
+    except Exception:
+        return False, None
 SKIP_CLASSES = {"Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW", "Windows.UI.Core.CoreWindow",
                 "DeskPilotOverlay", "TkTopLevel_DeskPilotOverlay"}
 
@@ -107,7 +119,11 @@ def foreground() -> int:
     return user32.GetForegroundWindow()
 
 
-def focus(hwnd: int) -> bool:
+def focus(hwnd: int, local: bool = False) -> bool:
+    if not local:
+        done, res = _via_helper("focus", hwnd=hwnd)
+        if done:
+            return bool(res)
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     # Never tap Alt here: a lone Alt press opens the menu bar (Notepad, Explorer, Office...) and the next
@@ -141,7 +157,10 @@ def focus(hwnd: int) -> bool:
     return foreground() == hwnd
 
 
-def move_to(hwnd: int, area: Rect, maximize: bool = True) -> None:
+def move_to(hwnd: int, area: Rect, maximize: bool = True, local: bool = False) -> None:
+    if not local and _via_helper("move_to", hwnd=hwnd, area=[area.left, area.top, area.width, area.height],
+                                 maximize=maximize)[0]:
+        return
     win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     l, t, r, b = win32gui.GetWindowRect(hwnd)
     w, h = min(r - l, area.width), min(b - t, area.height)
@@ -151,13 +170,17 @@ def move_to(hwnd: int, area: Rect, maximize: bool = True) -> None:
         win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
 
 
-def set_state(hwnd: int, op: str) -> None:
+def set_state(hwnd: int, op: str, local: bool = False) -> None:
+    if not local and _via_helper("set_state", hwnd=hwnd, op=op)[0]:
+        return
     cmd = {"minimize": win32con.SW_MINIMIZE, "maximize": win32con.SW_MAXIMIZE,
            "restore": win32con.SW_RESTORE}[op]
     win32gui.ShowWindow(hwnd, cmd)
 
 
-def close(hwnd: int) -> None:
+def close(hwnd: int, local: bool = False) -> None:
+    if not local and _via_helper("close", hwnd=hwnd)[0]:
+        return
     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
 
 

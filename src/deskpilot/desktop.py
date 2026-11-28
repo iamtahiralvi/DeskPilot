@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import win32gui
 
-from . import clip, killswitch
+from . import act as act_mod
+from . import clip, elevation, killswitch
 from . import routines as R
 from . import timeline as TL
 from .screenlock import Busy, ScreenLock
@@ -140,6 +141,19 @@ class Desktop:
             self.user_wait, self.user_idle = 60.0, 1.5
         self.look_first = bool(self.gate.policy.rules.get("look_before_acting", True))
         self.screen_lock = ScreenLock()
+        # Admin mode: "ask" (default) = the AI may ask to turn it on (a DeskPilot dialog, then Windows' UAC prompt)
+        # and it turns off again at done(); "always" = turn it on at the first call and keep it for the session;
+        # "off" = never. See elevation.py.
+        self.admin = elevation.AdminHelper()
+        self.admin_mode = str(self.gate.policy.rules.get("admin_mode", "ask")).strip().lower()
+        if self.admin_mode not in ("ask", "always", "off"):
+            self.admin_mode = "ask"
+        self._admin_declined = False
+        try:
+            self.admin_idle = float(self.gate.policy.rules.get("admin_idle_minutes", 5) or 0) * 60
+        except (TypeError, ValueError):
+            self.admin_idle = 300.0
+        self._admin_timer: threading.Timer | None = None
         try:
             keep = float(self.gate.policy.rules.get("timeline_keep_days", 7))
         except (TypeError, ValueError):
@@ -157,6 +171,9 @@ class Desktop:
         if self._idle_timer:
             self._idle_timer.cancel()
             self._idle_timer = None
+        if self._admin_timer:
+            self._admin_timer.cancel()
+            self._admin_timer = None
 
     def idle(self):
         """A tool call ended: hide the overlay if the agent stays quiet (it may have finished without done())."""
@@ -165,6 +182,17 @@ class Desktop:
             self._idle_timer = threading.Timer(self.idle_hide, self.finish, kwargs={"reason": "idle"})
             self._idle_timer.daemon = True
             self._idle_timer.start()
+        if self.admin.active and self.admin_mode != "always" and self.admin_idle > 0:
+            # The overlay hides after a short silence, but admin mode waits longer: the agent may just be thinking,
+            # and turning it off would mean another UAC prompt for the user.
+            self._admin_timer = threading.Timer(self.admin_idle, self._admin_expired)
+            self._admin_timer.daemon = True
+            self._admin_timer.start()
+
+    def _admin_expired(self):
+        if self.admin.active:
+            self.call_admin_off()
+            audit({"event": "admin", "on": False, "reason": "idle"})
 
     def finish(self, summary: str = "", reason: str = "done") -> str:
         """Task over: drop the overlay. A user Pause/Stop stays in effect (the next call shows it again);
@@ -176,6 +204,10 @@ class Desktop:
         steps, self.task_log = self.task_log, []
         self._moving = None
         restored = self._restore_user_clip() if self._user_clip is not None else ""
+        admin_note = ""
+        if self.admin.active and self.admin_mode != "always" and reason == "done":
+            self.call_admin_off()
+            admin_note = "Admin mode is off again (it lasts one task)."
         if self.screen_lock.held:
             self.screen_lock.release()
             self.timeline.record("✓ " + (summary or "task finished") if reason == "done" else "task went idle",
@@ -191,6 +223,8 @@ class Desktop:
             if self.paused else "")
         if restored:
             out += f" ({restored})"
+        if admin_note:
+            out += " " + admin_note
         if reason == "done" and steps:
             shown = steps[-40:]
             out += f"\nWhat you did this task ({len(steps)} steps" + (", last 40" if len(steps) > 40 else "") + "):\n"
@@ -204,7 +238,7 @@ class Desktop:
 
     # ------------------------------------------------------------ plumbing
     def _init_thread(self):
-        self.uia = UIA()
+        self.uia = elevation.RoutedUIA(UIA(), self.admin)
 
     def call(self, fn, *a, **kw):
         if fn == self.finish:
@@ -306,6 +340,80 @@ class Desktop:
             self.pick()
         self.overlay.start(self.session.areas(), self.session.mode)
         self._check_paused()
+        if self.admin_mode == "always" and not self.admin.active and not self._admin_declined:
+            try:
+                self.admin_on()
+            except AgentError:
+                pass  # declined or failed: admin windows report themselves as blocked; don't ask again this run
+
+    # ------------------------------------------------------------ admin mode (elevation.py)
+    def _wire_admin(self, on: bool) -> None:
+        act_mod.remote_sender = (lambda items: self.admin.call("input", items=items)) if on else None
+        winutil.remote = self.admin.call if on else None
+
+    def admin_on(self) -> str:
+        """Start the admin helper (UAC prompt) so input and reads reach windows that run as administrator."""
+        if self.admin.active:
+            return "Admin mode is already on: you can click and type in windows that run as administrator."
+        if elevation.own_level() >= elevation.HIGH:
+            return "DeskPilot already runs as administrator, so it can already use admin windows. Nothing to do."
+        if self.admin_mode == "off":
+            raise AgentError("Admin mode is switched off in the user's DeskPilot policy (admin_mode: off). Ask the "
+                             "user to do the step themselves, or to change admin_mode in the policy file.")
+        if self.admin_mode == "ask":
+            self._require({"kind": "admin"},
+                          detail="The AI wants to click and type in windows that run as administrator (installers, "
+                                 "Task Manager, hardware tools, some settings). Windows blocks that unless you allow "
+                                 "DeskPilot's admin helper.\n\nIf you allow it here, Windows shows a UAC prompt next "
+                                 "(it names Python, which runs DeskPilot). Admin mode ends when this task is done.")
+        self.ui_state("asking", "approve the Windows prompt to turn on admin mode")
+        self.ui_log("\U0001F6E1 asking Windows for admin mode")
+        try:
+            self.admin.start()
+        except elevation.HelperError as e:
+            self._admin_declined = True
+            audit({"event": "admin", "on": False, "error": str(e)})
+            raise AgentError(f"Admin mode is NOT on: {e}. Ask the user to do the admin step themselves.")
+        finally:
+            self.input.grace(1.5)  # the user just used the mouse on the prompt
+            self.ui_state("working")
+        self._admin_declined = False
+        self._wire_admin(True)
+        self.ui_log("\U0001F6E1 admin mode on")
+        audit({"event": "admin", "on": True, "mode": self.admin_mode})
+        self.last_look = 0.0  # the prompt took time; look again before acting
+        return ("ADMIN MODE ON: your clicks, typing and window commands now also reach windows that run as "
+                "administrator, and snapshot() can read them. Windows' own UAC prompts still can't be clicked by "
+                "anyone but the user. " + ("It stays on for this session." if self.admin_mode == "always" else
+                                           "It turns off when you call done(), or after a few quiet minutes.")
+                + " Take a snapshot, then act.")
+
+    def call_admin_off(self) -> None:
+        self._wire_admin(False)
+        if self.admin.active:
+            self.admin.stop()
+            self.ui_log("\U0001F6E1 admin mode off")
+            audit({"event": "admin", "on": False})
+
+    def admin_off(self) -> str:
+        was = self.admin.active
+        self.call_admin_off()
+        return "Admin mode is off." if was else "Admin mode was not on."
+
+    def _admin_blocked(self, hwnd: int) -> None:
+        """Refuse an input step aimed at an admin window Windows won't let us reach (instead of a click that
+        silently lands on the window behind it)."""
+        if self.admin.active or not hwnd or not elevation.window_above_us(hwnd):
+            return
+        root = winutil.user32.GetAncestor(hwnd, 2) or hwnd
+        title = win32gui.GetWindowText(root)
+        exe = winutil._exe_name(elevation.window_pid(root))
+        audit({"event": "admin_blocked", "title": title[:80], "exe": exe})
+        raise AgentError(elevation.blocked_message(title or "this window", exe, self.admin_mode != "off"))
+
+    def _guard_keys(self) -> None:
+        """Keys go to the foreground window: refuse if that is an admin window we can't reach."""
+        self._admin_blocked(winutil.foreground())
 
     def pick(self) -> str:
         try:
@@ -359,7 +467,15 @@ class Desktop:
         top = winutil.top_window(self.areas)
         if top:
             title = "(private)" if self._private(top) else f'"{top.title[:70]}"'
-            lines.append(f"top window: {self.wref(top.hwnd)} {title}")
+            admin = " (runs as administrator)" if elevation.window_above_us(top.hwnd) else ""
+            lines.append(f"top window: {self.wref(top.hwnd)} {title}{admin}")
+        if self.admin.active:
+            lines.append("admin mode: ON (input reaches admin windows)")
+        elif elevation.own_level() >= elevation.HIGH:
+            lines.append("admin mode: DeskPilot itself runs as administrator")
+        else:
+            lines.append("admin mode: off" + (" (screen_info(op='admin') asks the user)" if self.admin_mode != "off"
+                                              else " (disabled in policy)"))
         return "\n".join(lines)
 
     # ------------------------------------------------------------ browser pages
@@ -431,6 +547,13 @@ class Desktop:
         page = self._page(w)
         if page:
             return self._web_block(w, page, full_page, filt, max_nodes)
+        note = []
+        if not self.admin.active and elevation.window_above_us(w.hwnd):
+            note = ["(ADMIN WINDOW: this app runs as administrator. Windows hides its elements from DeskPilot and "
+                    "drops clicks and typing into it. Screenshots and snapshot(scope='ocr') still read it. To act in "
+                    "it, ask the user to do the step"
+                    + (", or call screen_info(op=\"admin\") to ask them to turn on admin mode (UAC prompt)"
+                       if self.admin_mode != "off" else "") + ".)"]
         try:
             tree = self.uia.tree(w.hwnd)
         except Exception as e:
@@ -438,9 +561,9 @@ class Desktop:
         lines, by_ref, hidden = format_tree(tree, self.areas, self.refs, max_nodes, filt)
         if hidden:
             lines.append(f"…{hidden} more elements hidden (use find, or snapshot with filter)")
-        if not lines:
+        if not lines and not note:
             lines.append("(no accessible elements; use scope='ocr' or screenshot)")
-        return lines, by_ref
+        return note + lines, by_ref
 
     def snapshot(self, scope: str = "window", filter: str | None = None, max_nodes: int = 250,
                  region=None) -> str:
@@ -448,6 +571,9 @@ class Desktop:
         if scope == "ocr" or region is not None:
             self.last_look = time.time()
             return self._ocr_snapshot(filter, None if region is None else self._region_rect(region))
+        if elevation.secure_desktop():
+            self.last_look = time.time()
+            return elevation.SECURE_DESKTOP_MSG
         wins = [w for w in winutil.windows() if winutil.on_area(w, self.areas)]
         out = [f"{self._screen_label()}"]
         by_ref_all: dict[str, str] = {}
@@ -629,7 +755,10 @@ class Desktop:
         return black_out(img, area, self._private_rects(area)), int((time.time() - start) * 1000), settled
 
     def _black_hint(self, img, area: Rect) -> str:
-        """An all-black capture usually means the wrong screen (or a locked/sleeping one): say where windows are."""
+        """An all-black capture usually means the wrong screen (or a locked/sleeping one): say where windows are.
+        While a UAC prompt is up, say that instead (the picture is black or frozen then)."""
+        if elevation.secure_desktop():
+            return elevation.SECURE_DESKTOP_MSG
         if not is_black(img):
             return ""
         mons = monitors()
@@ -797,7 +926,7 @@ class Desktop:
         info = self.refs.get(ref)
         return info.name if info else ""
 
-    def _guard_point(self, x, y):
+    def _guard_point(self, x, y, admin_check: bool = True):
         if not self.session.allowed(x, y):
             raise AgentError(f"({x},{y}) is outside the screen you are allowed to control")
         h = win32gui.WindowFromPoint((x, y))
@@ -812,6 +941,8 @@ class Desktop:
                 exe = ""
             if self.privacy.is_private(title, exe):
                 raise AgentError("that point is inside a private window (privacy settings); ask the user")
+            if admin_check:
+                self._admin_blocked(root)
 
     # ------------------------------------------------------------ actions
     def _orient(self) -> str | None:
@@ -877,6 +1008,8 @@ class Desktop:
         self.ensure_ready()
         if not isinstance(steps, list) or not steps:
             raise AgentError("steps must be a non-empty list")
+        if elevation.secure_desktop():
+            raise AgentError(elevation.SECURE_DESKTOP_MSG + " None of your steps were run.")
         brief = self._orient()
         if brief:
             return brief
@@ -951,6 +1084,8 @@ class Desktop:
         else:
             res.append(f"ok ({done} steps)")
         res += report
+        if elevation.secure_desktop():  # e.g. a click on "Install" brought up a UAC prompt
+            res.append(elevation.SECURE_DESKTOP_MSG)
         self.last_look = time.time()
         shot = None
         if observe != "none" and not self.pause_reason == "stopped":
@@ -1032,7 +1167,7 @@ class Desktop:
         for kind in ("click", "dblclick", "rclick", "hover"):
             if kind in st:
                 x, y, name, info = self._resolve(st[kind])
-                self._guard_point(x, y)
+                self._guard_point(x, y, admin_check=kind != "hover")  # the cursor itself reaches admin windows
                 if kind == "hover":
                     self.input.move(x, y)
                     time.sleep(st.get("hold", 0.6))
@@ -1053,6 +1188,7 @@ class Desktop:
                 self.input.click(x, y)
                 time.sleep(0.15)
             f = self._settled_focus()
+            self._guard_keys()
             self._typed_secret = bool(f and f.password)
             self._require({"kind": "type", "password": bool(f and f.password), "name": f.name if f else ""})
             delay = _delay(st, 0.012)
@@ -1073,6 +1209,7 @@ class Desktop:
             return note
         if "key" in st:
             combo = normalize_combo(str(st["key"]))
+            self._guard_keys()
             f = self.uia.focused()
             self._require({"kind": "key", "combo": combo, "editable": bool(f and f.role in EDITABLE),
                            "name": f.name if f else ""})
@@ -1080,6 +1217,7 @@ class Desktop:
                 self.input.press(combo)
             return
         if "key_down" in st:
+            self._guard_keys()
             self.input.key_down(st["key_down"])
             return
         if "key_up" in st:
@@ -1231,6 +1369,7 @@ class Desktop:
             self.input.click(x, y)
             time.sleep(0.15)
         f = self._settled_focus()
+        self._guard_keys()
         self._typed_secret = bool(f and f.password)
         self._require({"kind": "type", "password": bool(f and f.password), "name": f.name if f else ""})
         if st.get("clear"):
@@ -1597,7 +1736,8 @@ class Desktop:
                 scr = next((i + 1 for i, m in enumerate(mons) if m.contains(cx, cy)), "?")
                 mark = "" if winutil.on_area(w, self.areas) or w.minimized else " (other screen)"
                 title = "(private)" if self._private(w) else f'"{w.title[:60]}"'
-                out.append(f'{self.wref(w.hwnd)} {title} {w.exe()} screen{scr}'
+                admin = " admin" if elevation.window_above_us(w.hwnd) else ""
+                out.append(f'{self.wref(w.hwnd)} {title} {w.exe()}{admin} screen{scr}'
                            f'{" minimized" if w.minimized else ""}{mark}')
             return "\n".join(out) or "no windows"
         self._claim()
@@ -1606,6 +1746,8 @@ class Desktop:
         if self._private(w):
             raise AgentError("that window is private (privacy settings)")
         self.ui_log(f"{op} window {w.title[:40]}")
+        if op != "focus":
+            self._admin_blocked(w.hwnd)  # bringing it to the front works; closing, moving and resizing don't
         if op == "close":
             self._require({"kind": "close", "window": w.title[:60]})
             winutil.close(w.hwnd)

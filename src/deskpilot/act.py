@@ -39,9 +39,26 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
 
-def _send(*inputs: INPUT) -> None:
+# Set while the admin helper runs (elevation.py): input then goes through it so it also reaches admin windows.
+remote_sender = None
+
+
+def _send_local(*inputs: INPUT) -> None:
     arr = (INPUT * len(inputs))(*inputs)
     user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+
+
+def _send(*inputs: INPUT) -> None:
+    sender = remote_sender
+    if sender is not None:
+        items = [(i.type, i.u.mi.dwFlags, i.u.mi.mouseData) if i.type == INPUT_MOUSE
+                 else (i.type, i.u.ki.wVk, i.u.ki.wScan, i.u.ki.dwFlags) for i in inputs]
+        try:
+            sender(items)
+            return
+        except Exception:
+            pass  # helper gone: fall back to sending it ourselves (works everywhere except admin windows)
+    _send_local(*inputs)
 
 
 def _mouse(flags: int, data: int = 0) -> INPUT:
