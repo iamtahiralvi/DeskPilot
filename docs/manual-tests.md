@@ -45,6 +45,16 @@ Approve its UAC prompt yourself.
 | 21 | `act(...)` while the prompt is open | `WINDOWS SECURE DESKTOP … None of your steps were run.` |
 | 22 | Answer the prompt, then `snapshot()` | Normal again |
 
+## Launching admin apps and stray clicks
+
+| # | Ask the agent / do | Expected |
+|---|---|---|
+| 22a | `launch("Registry Editor")` (or HWiNFO, GPU-Z, msconfig) | The result waits while the UAC prompt is up, then names the window and says it runs as administrator |
+| 22b | Same, but answer **No** on UAC | `NOTE: … asks for administrator rights … No window yet: the user may have said No` |
+| 22c | `launch("notepad")` | No admin note |
+| 22d | In Explorer, double-click a .txt file | Step report: `⚠ "… Notepad" (Notepad.exe) is now in front, not the window clicked ("…")` |
+| 22e | Click a button in Notepad (e.g. a menu) | No `is now in front` note |
+
 ## Regression spot checks
 
 | # | Ask the agent / do | Expected |

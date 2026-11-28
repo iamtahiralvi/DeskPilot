@@ -411,6 +411,29 @@ class Desktop:
         audit({"event": "admin_blocked", "title": title[:80], "exe": exe})
         raise AgentError(elevation.blocked_message(title or "this window", exe, self.admin_mode != "off"))
 
+    def _landed_note(self, under: int) -> str:
+        """After a click: if a window other than the one clicked (or its own dialogs and menus) came to the front,
+        say so, so the agent doesn't type into the wrong app."""
+        try:
+            fg = _root_of(winutil.foreground())
+            if not under or not fg or fg == under or _related(fg, under):
+                return ""
+            if win32gui.GetClassName(under) in winutil.SKIP_CLASSES:  # taskbar, desktop: switching apps is the point
+                return ""
+            fg_pid = elevation.window_pid(fg)
+            if fg_pid in winutil.OWN_PIDS or fg_pid == elevation.window_pid(under):
+                return ""
+            if not win32gui.IsWindowVisible(fg) or not win32gui.GetWindowText(fg):
+                return ""
+            title, exe = win32gui.GetWindowText(fg), winutil._exe_name(fg_pid)
+            if self.privacy.is_private(title, exe):
+                title = "(private)"
+            return (f'⚠ "{_clip(title, 50)}" ({exe}) is now in front, not the window clicked '
+                    f'("{_clip(win32gui.GetWindowText(under), 40)}"). Fine if the click was meant to open it; '
+                    "otherwise the click went astray: look before typing")
+        except Exception:
+            return ""
+
     def _guard_keys(self) -> None:
         """Keys go to the foreground window: refuse if that is an admin window we can't reach."""
         self._admin_blocked(winutil.foreground())
@@ -1175,9 +1198,10 @@ class Desktop:
                 self._require({"kind": kind, "name": name, "role": info.get("role")})
                 if kind == "rclick":
                     button = "right"
+                under = _root_at(x, y)
                 self.input.click(x, y, button, 2 if kind == "dblclick" else st.get("count", 1))
                 time.sleep(0.12)
-                return
+                return self._landed_note(under)
         if "type" in st:
             text = str(st["type"])
             rect = None
@@ -1633,6 +1657,7 @@ class Desktop:
         before = {w.hwnd for w in winutil.windows(include_minimized=True)}
         fg_before = winutil.foreground()
         how = ""
+        exe_path = None  # set when we know which .exe starts, to warn about apps that ask for admin rights
         m = re.match(r"^(agent|deskpilot) browser\s*(.*)$", t, re.I)
         web = (m.group(2).strip() if m else t)
         if not new_window and re.match(r"^(https?://|www\.)", web, re.I):
@@ -1654,6 +1679,7 @@ class Desktop:
         elif os.path.exists(os.path.expandvars(t)):
             p = os.path.expandvars(t)
             self._require({"kind": "launch", "app": p})
+            exe_path = p
             os.startfile(p)
             how = "opened"
         else:
@@ -1669,10 +1695,15 @@ class Desktop:
                    or next((a for a in apps if a["Name"].lower().startswith(q)), None)
                    or next((a for a in apps if q in a["Name"].lower()), None))
             if app:
+                exe_path = elevation.app_id_path(app["AppID"])
                 subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app['AppID']}"], creationflags=NO_WINDOW)
                 how = f"launched {app['Name']}"
             elif shutil.which(t):
-                subprocess.Popen([shutil.which(t)], creationflags=NO_WINDOW)
+                exe_path = shutil.which(t)
+                if elevation.needs_admin(exe_path):
+                    os.startfile(exe_path)  # Popen can't start an app that needs admin rights; the shell shows UAC
+                else:
+                    subprocess.Popen([exe_path], creationflags=NO_WINDOW)
                 how = f"launched {t}"
             else:
                 close = [a["Name"] for a in apps if any(p in a["Name"].lower() for p in q.split())][:8]
@@ -1680,19 +1711,40 @@ class Desktop:
         audit({"event": "launch", "target": t})
         if self.recording is not None and observe:
             self.recording.append({"launch": t})
-        w = self._wait_new_window(before, fg_before)
+        level = elevation.needs_admin(exe_path)
+        notes = []
+        if level:
+            self.ui_log("🛡 this app asks for admin rights: answer Windows' prompt")
+        w = self._wait_new_window(before, fg_before, uac=bool(level))
+        admin_win = bool(w) and not self.admin.active and elevation.window_above_us(w.hwnd)
         if w and not winutil.on_area(w, self.areas):
-            winutil.move_to(w.hwnd, self.areas[0])
+            if admin_win:  # Windows won't let us move it; say where it is instead
+                notes.append("it opened on another screen and runs as administrator, so DeskPilot can't move it "
+                             "here; ask the user to drag it over, or turn on admin mode (screen_info(op=\"admin\"))")
+            else:
+                winutil.move_to(w.hwnd, self.areas[0])
         if w:
             winutil.focus(w.hwnd)
             _wait_input_idle(w.hwnd)
             time.sleep(0.8)  # packaged apps (Notepad, Store...) keep loading after input-idle
         msg = f"{how}: {t}" + (f" -> {self.wref(w.hwnd)} \"{w.title[:60]}\"" if w else " (no new window seen yet)")
+        if level and not w:
+            notes.append(elevation.SECURE_DESKTOP_MSG if elevation.secure_desktop() else
+                         elevation.launch_admin_note(t, level) + " No window yet: the user may have said No, or it is "
+                         "still starting. Look again in a moment.")
+        elif level or admin_win:
+            notes.append(f"{t} runs as administrator: Windows blocks your clicks and typing in it unless the user "
+                         "turns on admin mode (screen_info(op=\"admin\")); screenshots and OCR still read it.")
+        if notes:
+            msg += "\n" + "\n".join(notes)
         return msg + ("\n" + self.snapshot() if observe else "")
 
-    def _wait_new_window(self, before: set[int], fg_before: int, timeout: float = 10):
+    def _wait_new_window(self, before: set[int], fg_before: int, timeout: float = 10, uac: bool = False):
+        """The window an app launch opened. While Windows shows a UAC prompt for it, wait (up to 2 minutes) for the
+        user to answer instead of giving up after `timeout`."""
         end = time.time() + timeout
-        while time.time() < end:
+        uac_end = time.time() + 120
+        while time.time() < end or (uac and time.time() < uac_end and elevation.secure_desktop()):
             wins = winutil.windows()
             new = [w for w in wins if w.hwnd not in before]
             if new:
@@ -1811,6 +1863,30 @@ class Desktop:
         self.shot = None
         self.overlay.start(self.areas, self.session.mode)
         return self.info()
+
+
+def _root_of(hwnd: int) -> int:
+    return (winutil.user32.GetAncestor(hwnd, 2) or hwnd) if hwnd else 0  # GA_ROOT
+
+
+def _root_at(x: int, y: int) -> int:
+    try:
+        return _root_of(win32gui.WindowFromPoint((x, y)))
+    except Exception:
+        return 0
+
+
+def _related(a: int, b: int) -> bool:
+    """True when one window is owned by the other (dialogs, popups, menus of the same app)."""
+    for start, other in ((a, b), (b, a)):
+        h = start
+        for _ in range(10):
+            h = winutil.user32.GetWindow(h, 4)  # GW_OWNER
+            if not h:
+                break
+            if h == other:
+                return True
+    return False
 
 
 def _wait_input_idle(hwnd: int, timeout_ms: int = 3000) -> None:

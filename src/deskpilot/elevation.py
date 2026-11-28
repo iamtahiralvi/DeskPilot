@@ -165,6 +165,65 @@ def secure_desktop() -> bool:
         _u32.CloseDesktop(h)
 
 
+_needs_cache: dict[str, str | None] = {}
+
+
+def needs_admin(path: str | None) -> str | None:
+    """'requireAdministrator' or 'highestAvailable' when an .exe's manifest asks Windows for admin rights (so
+    starting it shows a UAC prompt for an admin user), else None."""
+    if not IS_WINDOWS or not path or not path.lower().endswith(".exe") or not os.path.isfile(path):
+        return None
+    key = os.path.normcase(os.path.abspath(path))
+    if key in _needs_cache:
+        return _needs_cache[key]
+    level = None
+    try:
+        import win32api
+
+        h = win32api.LoadLibraryEx(key, 0, 0x00000002 | 0x00000020)  # AS_DATAFILE | AS_IMAGE_RESOURCE
+        try:
+            for rid in (1, 2):  # 1 = exe manifest, 2 = isolation-aware dll manifest
+                try:
+                    text = win32api.LoadResource(h, 24, rid).decode("utf-8", "ignore")  # RT_MANIFEST
+                except Exception:
+                    continue
+                for want in ("requireAdministrator", "highestAvailable"):
+                    if f'level="{want}"' in text or f"level='{want}'" in text:
+                        level = want
+                break
+        finally:
+            win32api.FreeLibrary(h)
+    except Exception:
+        level = None
+    _needs_cache[key] = level
+    return level
+
+
+def app_id_path(app_id: str) -> str | None:
+    """The .exe behind a Start-menu AppID when it is a plain desktop app: a full path, or a known-folder GUID
+    plus a relative path ("{6D809377-...}\\OCCT\\OCCT.exe"). None for Store apps and anything else."""
+    if not app_id or not app_id.lower().endswith(".exe"):
+        return None
+    if os.path.isabs(app_id):
+        return app_id
+    if app_id.startswith("{") and "}" in app_id:
+        guid, rest = app_id[:app_id.index("}") + 1], app_id[app_id.index("}") + 1:].lstrip("\\")
+        try:
+            from win32com.shell import shell
+
+            return os.path.join(shell.SHGetKnownFolderPath(guid, 0, None), rest)
+        except Exception:
+            return None
+    return None
+
+
+def launch_admin_note(name: str, level: str) -> str:
+    asks = "always asks" if level == "requireAdministrator" else "asks (for administrator accounts)"
+    return (f"NOTE: {name} {asks} for administrator rights: Windows shows a UAC prompt that only the user can answer. "
+            "Don't click or type until they have; its window will run as administrator (see screen_info(op=\"admin\") "
+            "to act in it).")
+
+
 def blocked_message(title: str, exe: str, helper_allowed: bool) -> str:
     who = f'"{title[:60]}"' + (f" ({exe})" if exe else "")
     msg = (f"ADMIN WINDOW: {who} runs as administrator. Windows blocks DeskPilot's clicks and typing into it (UIPI), "

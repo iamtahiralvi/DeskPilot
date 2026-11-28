@@ -27,6 +27,8 @@
 | `outside the screen you are allowed to control` | The target is on another monitor | `window("move_here", "w3")`, or ask the user to `screen_info(op="switch")` |
 | `private window` | A password manager or security window | Never interact with it. Ask the user |
 | `ADMIN WINDOW: … runs as administrator`, or a window marked `admin` | Windows blocks clicks, typing and reading from normal programs into admin programs (installers, Task Manager, OCCT, HWiNFO). The step was not done | Screenshots and `snapshot(scope="ocr")` still read it. To act in it, ask the user to do the step, or call `screen_info(op="admin")`: the user confirms and approves a UAC prompt, then your input reaches admin windows until `done()` |
+| `NOTE: … asks for administrator rights` after `launch` | The app's manifest asks Windows for admin rights, so a UAC prompt shows first | Don't act until the user has answered. Its window runs as administrator (see the row above) |
+| `⚠ "…" is now in front, not the window clicked` | The click brought another app to the front | Fine if the click was meant to open it. Otherwise it went astray: `snapshot()` before typing anything |
 | `Admin mode is NOT on: the user declined…` | The user said no to admin mode | Don't ask again this task. Ask the user to do the admin step |
 | `WINDOWS SECURE DESKTOP`, or a UAC prompt ("Do you want to allow this app to make changes?") | Windows' secure desktop is showing (UAC or Ctrl+Alt+Del). Nothing can see or click it, not even admin mode; DeskPilot runs no steps meanwhile | Stop and ask the user to answer it, then `snapshot()` again |
 | A dialog appears that you didn't expect | A system or site prompt | Read it. If it asks for consent, credentials or payment, stop and ask the user |

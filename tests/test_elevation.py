@@ -125,3 +125,34 @@ def test_always_mode_has_no_admin_countdown():
     d = _desk_stub(mode="always", idle=0.2)
     d.idle()
     assert d._admin_timer is None
+
+
+def test_needs_admin_reads_the_manifest():
+    import shutil
+
+    from deskpilot.elevation import launch_admin_note, needs_admin
+
+    assert needs_admin(shutil.which("notepad")) is None
+    assert needs_admin(os.path.join(os.environ["WINDIR"], "regedit.exe")) == "highestAvailable"
+    assert needs_admin(os.path.join(os.environ["WINDIR"], "System32", "msconfig.exe")) == "requireAdministrator"
+    assert needs_admin(None) is None and needs_admin(r"C:\nope\missing.exe") is None
+    assert "UAC" in launch_admin_note("DDU", "requireAdministrator")
+
+
+def test_app_id_path_resolves_known_folders():
+    from deskpilot.elevation import app_id_path
+
+    p = app_id_path(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\msconfig.exe")  # System32
+    assert p and p.lower().endswith(r"system32\msconfig.exe") and os.path.isfile(p)
+    assert app_id_path("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App") is None
+    assert app_id_path(r"C:\Tools\x.exe") == r"C:\Tools\x.exe"
+
+
+def test_landed_note_quiet_when_the_clicked_window_stays_in_front(monkeypatch):
+    from deskpilot import desktop as dk, winutil
+
+    d = dk.Desktop.__new__(dk.Desktop)
+    monkeypatch.setattr(winutil, "foreground", lambda: 0)
+    assert d._landed_note(1234) == ""  # no foreground window: nothing to say
+    assert d._landed_note(0) == ""
+    assert not dk._related(0, 0)

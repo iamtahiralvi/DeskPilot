@@ -62,7 +62,7 @@ The agent clicks by reference (`e12`) or by visible text (`"Install"`). After ea
 
 **It looks before it acts.** If the agent hasn't looked at the screen (or acted) in the last minute, or you paused it or took over since, its next action is held back: it gets the current screen instead and must send steps that fit what is really there, not what it assumed. (`look_before_acting: false` in the policy turns this off; `look_fresh_seconds` sets the minute.)
 
-**It says what each step really did.** After a batch, the agent gets one line per step: whether the screen changed, where keyboard focus went, how many characters were pasted, and whether typed text was verified. A batch where nothing changed is flagged with a warning instead of "ok", so the agent doesn't carry on as if it had worked. Screenshots and results wait until the screen has stopped changing, ignoring a video or animation that never stops.
+**It says what each step really did.** After a batch, the agent gets one line per step: whether the screen changed, where keyboard focus went, how many characters were pasted, and whether typed text was verified. If a click brings a different app to the front than the window clicked, that step says so, so the agent doesn't go on typing into the wrong app. A batch where nothing changed is flagged with a warning instead of "ok", so the agent doesn't carry on as if it had worked. Screenshots and results wait until the screen has stopped changing, ignoring a video or animation that never stops.
 
 Snapshots are trimmed without losing anything the agent can use: an element nested inside an identical wrapper is listed once, a row that only repeats part of its parent row is folded into it, empty unnamed rows are skipped, and the browser's bookmarks bar becomes one line (`find()` and clicking by text still reach every bookmark). On a WhatsApp Web window this cut a snapshot from about 1,400 to about 860 tokens.
 
@@ -383,6 +383,7 @@ What DeskPilot does about it:
 
   Apps the agent opens with `launch()` still start at the normal level. The helper only talks to the DeskPilot process that started it, over a private pipe. It quits when admin mode turns off, when the AI session closes, or when you hit the kill switch. Before quitting, it lets go of any key or mouse button that is still held down.
 - **UAC prompts themselves can't be clicked**, not even in admin mode. Windows shows them on a separate secure desktop, so they're always yours to answer. DeskPilot notices when that desktop is showing. It tells the agent a prompt is waiting for you, rather than handing it a black screenshot, and runs none of its steps until you've answered.
+- **Apps that ask for admin rights are flagged at launch.** DeskPilot reads an app's manifest before starting it (HWiNFO, GPU-Z, msconfig, Registry Editor, most installers). It tells the agent a UAC prompt is coming that only you can answer, and waits up to 2 minutes for you rather than giving up after 10 seconds.
 - **Hovering works without admin mode.** Moving the pointer isn't blocked by Windows, so tooltips in admin windows still show.
 
 Set `admin_mode` in the policy file:
