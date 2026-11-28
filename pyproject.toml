@@ -20,7 +20,7 @@ dependencies = [
     "mcp>=2.0,<3",
     "mss>=9.0",
     "pillow>=10.0",
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.4",
     "websocket-client>=1.8",
     "psutil>=5.9",
     # Windows-only: DeskPilot controls a Windows desktop. Elsewhere the server still starts and lists its tools.
