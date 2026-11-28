@@ -77,7 +77,7 @@ image-heavy apps; checking how a form looks before the user sends it.
 - `e` refs come from Windows accessibility (desktop apps and the user's everyday browser). `b` refs come from the
   DeskPilot browser and also reach elements outside the visible area.
 - Refs go stale when the page changes. After navigation, find the element again instead of reusing an old ref.
-- `filter` is a plain substring, not a regular expression.
+- `filter` is a plain substring (not a regular expression) matched against the role, name and value: `filter="button"` lists only buttons, `filter="Save"` only elements that mention Save.
 
 ## Quick recipes
 

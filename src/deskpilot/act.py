@@ -41,6 +41,24 @@ class INPUT(ctypes.Structure):
 
 # Set while the admin helper runs (elevation.py): input then goes through it so it also reaches admin windows.
 remote_sender = None
+remote_cursor = None
+
+
+class CursorBlocked(Exception):
+    """Windows refused to move the pointer: while a window that runs as administrator is in front, a normal
+    program can't move the mouse at all (UIPI), not even over other windows."""
+
+
+def set_cursor(x: int, y: int) -> None:
+    rc = remote_cursor
+    if rc is not None:
+        try:
+            rc(x, y)
+            return
+        except Exception:
+            pass  # helper gone: try it ourselves
+    if not user32.SetCursorPos(x, y):
+        raise CursorBlocked(f"Windows refused to move the mouse pointer to ({x},{y})")
 
 
 def _send_local(*inputs: INPUT) -> None:
@@ -150,7 +168,7 @@ class Input:
             t = i / steps
             e = 1 - (1 - t) ** 3  # ease-out
             nx, ny = round(sx + (x - sx) * e), round(sy + (y - sy) * e)
-            user32.SetCursorPos(nx, ny)
+            set_cursor(nx, ny)
             self.on_move(nx, ny)
             last = (nx, ny)
             time.sleep(duration / steps)
@@ -177,7 +195,7 @@ class Input:
         _send(_mouse(MOUSE_FLAGS[button][0]))
         time.sleep(0.12)
         # small nudge so apps register a drag start
-        user32.SetCursorPos(x1 + 6, y1 + 6)
+        set_cursor(x1 + 6, y1 + 6)
         self.expect = (x1 + 6, y1 + 6)
         time.sleep(0.08)
         try:

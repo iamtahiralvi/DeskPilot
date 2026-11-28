@@ -84,3 +84,26 @@ def test_timeline_prune_drops_old(tmp_path, monkeypatch):
     os.utime(old, (1, 1))
     timeline.prune(7)
     assert [e["text"] for e in timeline.entries()] == ["new"] and not old.exists()
+
+
+def test_iban_redacted_only_when_checksum_holds():
+    from deskpilot.privacy import redact
+
+    assert redact("pay to GB82 WEST 1234 5698 7654 32 today") == "pay to [iban] today"
+    assert redact("DE89370400440532013000") == "[iban]"
+    # same shape, wrong checksum: a drive serial or part number stays readable
+    assert redact("Drive: YS SSD (YS20230512ABCD1234)") == "Drive: YS SSD (YS20230512ABCD1234)"
+    assert redact("GB83 WEST 1234 5698 7654 32") == "GB83 WEST 1234 5698 7654 32"
+
+
+def test_snapshot_filter_matches_roles_too():
+    from deskpilot.config import Rect
+    from deskpilot.perceive import Node, RefTable, format_tree
+
+    root = Node("window", "App", rect=(0, 0, 500, 500), children=[
+        Node("button", "Expand", rect=(10, 10, 60, 30)), Node("edit", "Search", rect=(10, 40, 200, 60)),
+        Node("text", "Save changes", rect=(10, 70, 200, 90))])
+    lines, _, _ = format_tree(root, [Rect(0, 0, 1000, 1000)], RefTable(), filt="button")
+    assert len(lines) == 1 and "Expand" in lines[0]
+    lines, _, _ = format_tree(root, [Rect(0, 0, 1000, 1000)], RefTable(), filt="save")
+    assert len(lines) == 1 and "Save changes" in lines[0]

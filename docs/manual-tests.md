@@ -21,13 +21,14 @@ Approve its UAC prompt yourself.
 | 2 | `snapshot()` with the admin app on top | Starts with `(ADMIN WINDOW: …)`, and few or no elements |
 | 3 | Click a button in it | `ADMIN WINDOW: … runs as administrator …`, the step is **not** run, and nothing behind it is clicked |
 | 4 | Type into it, or press a key | Same message, and no keys are sent |
-| 5 | Hover over a button in it | Runs: the pointer moves, and a tooltip may show |
+| 5 | With the admin app in front, click something in a normal window on your screen | `ADMIN WINDOW IN FRONT: …`, not "the user took the mouse"; works after `window("focus", …)` on the normal window |
 | 6 | `screenshot()` and `snapshot(scope="ocr")` | Both read the admin window |
 | 7 | `screen_info(op="admin")`, then **Deny** in the DeskPilot dialog | `USER DENIED`; no UAC prompt |
 | 8 | `screen_info(op="admin")`, Allow, then **No** on the UAC prompt | `Admin mode is NOT on: the user declined…` |
 | 9 | `screen_info(op="admin")`, Allow, then **Yes** on UAC | `ADMIN MODE ON`; `screen_info()` shows `admin mode: ON` |
 | 10 | `snapshot()` of the admin app | Its buttons and fields are listed |
-| 11 | Click and type in it (e.g. Task Manager's search box) | It works, and the step report shows the screen changed |
+| 11 | Click and type in it (e.g. Task Manager's search box) | It works: the pointer moves smoothly (no "user took the mouse" notes) and the step report shows the screen changed |
+| 11a | Without admin mode, `window("focus", …)` on an admin window that is on another screen | A clear ADMIN WINDOW message (can't move it), not `Access is denied` |
 | 12 | Do something in a normal app (Notepad) | Still works in admin mode |
 | 13 | `launch("notepad")`, then check Task Manager > Details > Elevated | Notepad is **not** elevated |
 | 14 | Wait 1 minute without calls, then act again | Admin mode is still on (the overlay hid, admin mode didn't) |

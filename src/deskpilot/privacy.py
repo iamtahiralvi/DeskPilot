@@ -16,9 +16,19 @@ _PATTERNS = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "[token]"),
     # Private keys
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)"), "[private key]"),
-    # IBAN
-    (re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b"), "[iban]"),
 ]
+# IBAN shape; only redacted when the ISO 13616 mod-97 checksum holds (a drive serial or part number that merely
+# looks like one stays readable).
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")
+
+
+def _iban_ok(s: str) -> bool:
+    s = s.replace(" ", "")
+    if not 15 <= len(s) <= 34:
+        return False
+    moved = s[4:] + s[:4]
+    digits = "".join(str(int(c, 36)) for c in moved)
+    return int(digits) % 97 == 1
 # Characters that render as nothing but still reach the model: a classic way to hide instructions in a page.
 # Unicode "tag" characters (U+E0000-E007F) can spell out a whole ASCII sentence invisibly, so finding them is a
 # strong sign of a prompt-injection attempt. Zero-width joiner and variation selectors are kept (emoji use them).
@@ -57,6 +67,8 @@ def redact(text: str) -> str:
         return text
     for pat, rep in _PATTERNS:
         text = pat.sub(rep, text)
+
+    text = _IBAN.sub(lambda m: "[iban]" if _iban_ok(m.group(0)) else m.group(0), text)
 
     def card(m: re.Match) -> str:
         digits = re.sub(r"\D", "", m.group(0))

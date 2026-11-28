@@ -349,6 +349,7 @@ class Desktop:
     # ------------------------------------------------------------ admin mode (elevation.py)
     def _wire_admin(self, on: bool) -> None:
         act_mod.remote_sender = (lambda items: self.admin.call("input", items=items)) if on else None
+        act_mod.remote_cursor = (lambda x, y: self.admin.call("cursor", x=x, y=y)) if on else None
         winutil.remote = self.admin.call if on else None
 
     def admin_on(self) -> str:
@@ -433,6 +434,18 @@ class Desktop:
                     "otherwise the click went astray: look before typing")
         except Exception:
             return ""
+
+    def _cursor_blocked_msg(self) -> str:
+        fg = _root_of(winutil.foreground())
+        if fg and elevation.window_above_us(fg):
+            title = win32gui.GetWindowText(fg)
+            exe = winutil._exe_name(elevation.window_pid(fg))
+            audit({"event": "cursor_blocked", "title": title[:80], "exe": exe})
+            return elevation.cursor_blocked_message(title or "a window", exe, self.admin_mode != "off")
+        if elevation.secure_desktop():
+            return elevation.SECURE_DESKTOP_MSG
+        return ("Windows refused to move the mouse pointer (a window running as administrator may be in front, or "
+                "the screen is locked), so this step was NOT done. Take a screenshot to see what is going on.")
 
     def _guard_keys(self) -> None:
         """Keys go to the foreground window: refuse if that is an admin window we can't reach."""
@@ -1063,6 +1076,8 @@ class Desktop:
                         self._typed_secret = False
                         note = self._step(st)
                         break
+                    except act_mod.CursorBlocked:
+                        raise AgentError(self._cursor_blocked_msg())
                     except UserInterrupted as e:
                         if not e.retry:
                             raise AgentError(f"{e}. Check the screen before trying again")
@@ -1190,7 +1205,7 @@ class Desktop:
         for kind in ("click", "dblclick", "rclick", "hover"):
             if kind in st:
                 x, y, name, info = self._resolve(st[kind])
-                self._guard_point(x, y, admin_check=kind != "hover")  # the cursor itself reaches admin windows
+                self._guard_point(x, y)
                 if kind == "hover":
                     self.input.move(x, y)
                     time.sleep(st.get("hold", 0.6))
@@ -1595,6 +1610,9 @@ class Desktop:
 
     # ---- "already open?" checks, so launch() switches instead of opening a second copy
     def _bring_here(self, w: winutil.Win) -> None:
+        if not winutil.on_area(w, self.areas) and not self.admin.active and elevation.window_above_us(w.hwnd):
+            raise AgentError(elevation.blocked_message(w.title, w.exe(), self.admin_mode != "off")
+                             .replace("clicks and typing into it", "moving it to your screen"))
         if w.minimized:
             winutil.focus(w.hwnd)
         if not winutil.on_area(w, self.areas):
@@ -1805,6 +1823,10 @@ class Desktop:
             winutil.close(w.hwnd)
         elif op in ("focus", "move_here"):
             if op == "move_here" or not winutil.on_area(w, self.areas):
+                if not self.admin.active and elevation.window_above_us(w.hwnd):
+                    raise AgentError(elevation.blocked_message(w.title, w.exe(), self.admin_mode != "off")
+                                     .replace("clicks and typing into it", "moving it to your screen") +
+                                     " (Or ask the user to drag it to your screen.)")
                 winutil.move_to(w.hwnd, self.areas[0])
             winutil.focus(w.hwnd)
         elif op in ("minimize", "maximize", "restore"):

@@ -115,7 +115,8 @@ async def snapshot(scope: Literal["window", "page", "screen", "taskbar", "ocr"] 
     """Compact list of visible elements with refs, e.g. `e12 button "Install"`. scope: window=top window on
     your screen (default; web pages show only what's in view), page=whole web page incl. off-screen,
     screen=all windows there, taskbar, ocr=text read by OCR with clickable refs (canvas apps such as Flutter web,
-    where window/find see almost nothing). filter=only lines containing this text.
+    where window/find see almost nothing). filter=only elements whose role, name or value contains this text
+    (e.g. "button", "Save").
     region (OCR only that area: [x,y,w,h] in the last screenshot's pixels, "window", or a ref) reads one field
     cheaply, e.g. to check that "Height" now says 200."""
     return await _run(desk.snapshot, scope, filter, max_nodes, region)

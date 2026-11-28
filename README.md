@@ -384,7 +384,7 @@ What DeskPilot does about it:
   Apps the agent opens with `launch()` still start at the normal level. The helper only talks to the DeskPilot process that started it, over a private pipe. It quits when admin mode turns off, when the AI session closes, or when you hit the kill switch. Before quitting, it lets go of any key or mouse button that is still held down.
 - **UAC prompts themselves can't be clicked**, not even in admin mode. Windows shows them on a separate secure desktop, so they're always yours to answer. DeskPilot notices when that desktop is showing. It tells the agent a prompt is waiting for you, rather than handing it a black screenshot, and runs none of its steps until you've answered.
 - **Apps that ask for admin rights are flagged at launch.** DeskPilot reads an app's manifest before starting it (HWiNFO, GPU-Z, msconfig, Registry Editor, most installers). It tells the agent a UAC prompt is coming that only you can answer, and waits up to 2 minutes for you rather than giving up after 10 seconds.
-- **Hovering works without admin mode.** Moving the pointer isn't blocked by Windows, so tooltips in admin windows still show.
+- **An admin window in front blocks the mouse everywhere.** While an admin window is the active window, Windows won't let DeskPilot move the pointer at all, even over other windows. DeskPilot says so, rather than mistaking the pointer that won't move for you grabbing the mouse. The agent can bring the window it needs to the front first, or ask for admin mode.
 
 Set `admin_mode` in the policy file:
 

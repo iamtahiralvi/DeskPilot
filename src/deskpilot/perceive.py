@@ -161,8 +161,8 @@ def format_tree(root: Node, areas: list[Rect], refs: RefTable, max_nodes: int = 
         if (show and n.role in QUIET_UNNAMED and not n.name and n.value in (None, "")
                 and not (n.focused or n.selected)):
             show = False
-        if show and f and f not in (n.name or "").lower() and f not in str(n.value or "").lower():
-            show = False
+        if show and f and f not in f"{n.role} {n.name or ''} {n.value or ''}".lower():
+            show = False  # matches what the line shows: role (button, edit...), name or value
         if show:
             if len(lines) >= max_nodes:
                 hidden += 1

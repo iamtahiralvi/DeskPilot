@@ -156,3 +156,23 @@ def test_landed_note_quiet_when_the_clicked_window_stays_in_front(monkeypatch):
     assert d._landed_note(1234) == ""  # no foreground window: nothing to say
     assert d._landed_note(0) == ""
     assert not dk._related(0, 0)
+
+
+def test_refused_pointer_move_is_not_the_user(monkeypatch):
+    from deskpilot import act
+
+    monkeypatch.setattr(act, "remote_cursor", None)
+    monkeypatch.setattr(act.user32, "SetCursorPos", lambda x, y: 0)
+    with pytest.raises(act.CursorBlocked):
+        act.set_cursor(10, 10)
+    calls = []
+    monkeypatch.setattr(act, "remote_cursor", lambda x, y: calls.append((x, y)))
+    act.set_cursor(5, 6)  # admin mode: the helper moves it
+    assert calls == [(5, 6)]
+
+
+def test_cursor_blocked_message():
+    from deskpilot.elevation import cursor_blocked_message
+
+    m = cursor_blocked_message("HWiNFO", "HWiNFO64.EXE", True)
+    assert "IN FRONT" in m and "window(" in m and "NOT done" in m and 'op="admin"' in m

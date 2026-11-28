@@ -224,6 +224,18 @@ def launch_admin_note(name: str, level: str) -> str:
             "to act in it).")
 
 
+def cursor_blocked_message(title: str, exe: str, helper_allowed: bool) -> str:
+    who = f'"{title[:60]}"' + (f" ({exe})" if exe else "")
+    msg = (f"ADMIN WINDOW IN FRONT: {who} runs as administrator and is the active window. While it is, Windows "
+           "blocks DeskPilot from moving the mouse at all, even over other windows, so this step was NOT done. ")
+    if helper_allowed:
+        msg += ("Bring the window you want to the front first with window(\"focus\", \"wN\"), ask the user to do "
+                "the step, or call screen_info(op=\"admin\") to ask them to turn on admin mode.")
+    else:
+        msg += "Bring the window you want to the front first with window(\"focus\", \"wN\"), or ask the user."
+    return msg
+
+
 def blocked_message(title: str, exe: str, helper_allowed: bool) -> str:
     who = f'"{title[:60]}"' + (f" ({exe})" if exe else "")
     msg = (f"ADMIN WINDOW: {who} runs as administrator. Windows blocks DeskPilot's clicks and typing into it (UIPI), "
@@ -563,6 +575,10 @@ def serve_helper(pipe_name: str, server_pid: int) -> int:
                 elif op == "input":
                     _do_input(a["items"])
                     res = True
+                elif op == "cursor":
+                    from .act import user32 as _u
+
+                    res = bool(_u.SetCursorPos(int(a["x"]), int(a["y"])))
                 elif op == "focus":
                     res = winutil.focus(int(a["hwnd"]), local=True)
                 elif op == "close":

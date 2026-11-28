@@ -306,7 +306,9 @@ function(start, full, filt, limit) {
     const value = role === 'text' ? null : valueOf(el);
     if (!name && value == null && role !== 'edit') return;
     if (role === 'text' && !name) return;
-    if (f && !(name.toLowerCase().includes(f) || String(value || '').toLowerCase().includes(f))) return;
+    const shownRole = ({clickable: 'button', combobox: 'combo', textbox: 'edit', searchbox: 'edit',
+      menuitemcheckbox: 'menuitem', menuitemradio: 'menuitem', switch: 'checkbox', option: 'item'})[role] || role;
+    if (f && !((shownRole + ' ' + name + ' ' + String(value || '')).toLowerCase().includes(f))) return;
     if (out.length >= limit) { more++; return; }
     if (!el.__dpid) { el.__dpid = 'b' + (W.__dpn++); }
     W.__dpm.set(el.__dpid, el);
